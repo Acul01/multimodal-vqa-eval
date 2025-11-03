@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# Environments
+.env
+.venv
+env/
+envs/
+*.egg-info/
+
+# Checkpoints / Models
+pretrained_model/
+*.pth
+*.pt
+*.ckpt
+*.bin
+
+# Data
+images/
+nle_data/
+*.jsonl
+*.zip
+*.tar
+*.tar.gz
+
+# Cluster logs
+job_logs/
+*.out
+*.err
+*.log
+slurm-*.out
+
+# Generated results
+results/
+!results/accuracy_grid.csv  # keep only summary table
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# System
+.DS_Store
+*.swp
