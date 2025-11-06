@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 *.pyd
 *.so
+test.py
 
 # Environments
 .env
