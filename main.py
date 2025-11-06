@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import argparse
 import os
 import torch
@@ -118,7 +115,7 @@ def main():
         print(f"\nSaved results: {os.path.relpath(out_csv, project_root)}")
 
     # -------------------------
-    # Update compact grid only
+    # Update accuracy grid 
     # -------------------------
     acc = simple_accuracy(results)
     update_best(

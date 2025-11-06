@@ -1,4 +1,3 @@
-# --- add near the top (or keep your existing imports) ---
 import os
 import re
 from typing import List, Dict, Optional
@@ -124,7 +123,7 @@ def _inject_image_into_messages(messages, pil_image: Image.Image):
     msgs.append({"role": "user", "content": [{"type": "image", "image": pil_image}]})
     return msgs
 
-# ---- VQA-X specific, tolerant postprocessor ----
+# ---- VQA-X specific postprocessor ----
 _BECAUSE_RE = re.compile(r"\bbecause\b", flags=re.I)
 
 def _split_on_because(text: str):
@@ -168,6 +167,7 @@ POSTPROCESSORS = {
     "VCR": _postprocess_pred_because_expl,
 }
 
+
 def build_prompt_vqax(question: str):
     instructions = (
         "You are a visual question answering assistant.\n"
@@ -187,6 +187,7 @@ def build_prompt_vqax(question: str):
         ],
     }]
 
+
 def build_prompt_actx(_unused: str = ""):
     instructions = (
         "You are an activity recognition assistant.\n"
@@ -198,6 +199,7 @@ def build_prompt_actx(_unused: str = ""):
         "Do NOT add any extra words before or after the sentence."
     )
     return [{"role": "user", "content": [{"type": "text", "text": instructions}, {"type": "image"}]}]
+
 
 def build_prompt_esnlive(hypothesis: str):
     """
@@ -248,6 +250,7 @@ def build_prompt_esnlive(hypothesis: str):
         ],
     })
     return conversation
+
 
 def build_prompt_vcr(question: str):
     """
