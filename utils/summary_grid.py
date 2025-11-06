@@ -10,6 +10,9 @@ SPLITS = ["train", "test", "val"]
 def _grid_path(project_root: str) -> str:
     return os.path.join(project_root, "results", "accuracy_grid.csv")
 
+def _grid_excel_path(project_root: str) -> str:
+    return os.path.join(project_root, "results", "accuracy_grid.xlsx")
+
 def _columns() -> List[str]:
     cols = []
     for m in MODELS:
@@ -28,8 +31,7 @@ def init_grid(project_root: str, force: bool = False) -> str:
         # If file exists but schema is outdated, migrate
         df = pd.read_csv(path)
         df = _ensure_schema(df)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        df.to_csv(path, index=False)
+        _save_grid(project_root, df)
         return path
 
     data = {"task": TASKS}
@@ -37,8 +39,7 @@ def init_grid(project_root: str, force: bool = False) -> str:
         data[col] = [None] * len(TASKS)
     df = pd.DataFrame(data, columns=["task"] + _columns())
 
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    df.to_csv(path, index=False)
+    _save_grid(project_root, df)
     return path
 
 def _ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
@@ -79,10 +80,25 @@ def _load_grid(project_root: str) -> pd.DataFrame:
     return _ensure_schema(df)
 
 def _save_grid(project_root: str, df: pd.DataFrame) -> str:
-    path = _grid_path(project_root)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    df.to_csv(path, index=False)
-    return path
+    """Save grid to both CSV and Excel formats."""
+    csv_path = _grid_path(project_root)
+    excel_path = _grid_excel_path(project_root)
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    
+    # Save CSV
+    df.to_csv(csv_path, index=False)
+    
+    # Save Excel (if openpyxl is available)
+    try:
+        df.to_excel(excel_path, index=False, engine='openpyxl')
+    except ImportError:
+        # If openpyxl is not installed, skip Excel export
+        pass
+    except Exception:
+        # If any other error occurs, skip Excel export
+        pass
+    
+    return csv_path
 
 def _parse_acc(cell_value) -> Optional[float]:
     """Extract numeric accuracy from a cell like '0.81 (50)'."""

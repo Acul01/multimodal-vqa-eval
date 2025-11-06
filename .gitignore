@@ -39,6 +39,7 @@ setup_llq.sh
 # Generated results
 results/
 !results/accuracy_grid.csv  # keep only summary table
+!results/accuracy_grid.xlsx  # keep only summary table (Excel)
 
 # Jupyter
 .ipynb_checkpoints/
