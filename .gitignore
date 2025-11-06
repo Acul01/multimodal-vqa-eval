@@ -33,6 +33,7 @@ job_logs/
 *.err
 *.log
 slurm-*.out
+setup_llq.sh
 
 # Generated results
 results/
