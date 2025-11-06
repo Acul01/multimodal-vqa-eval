@@ -22,7 +22,6 @@ A comprehensive evaluation framework for multimodal vision-language models on vi
 - **Flexible Configuration**:
   - Run on train/val/test splits
   - Limit number of samples for quick testing
-  - Task-specific prompt engineering and post-processing
 
 ## Data Structure
 
