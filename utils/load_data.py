@@ -12,14 +12,14 @@ from typing import Any, Dict, List, Optional
 # -----------------------------------------------------------------------------
 
 def _search_recursively(root: str, filename: str) -> Optional[str]:
-    """Rekursiv nach exakt 'filename' unter 'root' suchen."""
+    """Recursively search for exact 'filename' under 'root'."""
     for dirpath, _, files in os.walk(root):
         if filename in files:
             return os.path.join(dirpath, filename)
     return None
 
 def _norm_expl(example: Dict[str, Any]) -> Optional[str]:
-    """Erklärung robuster extrahieren (String oder Liste → erster Eintrag)."""
+    """Extract explanation robustly (string or list → first entry)."""
     for k in ("explanation", "explanations", "rationale", "nle", "exp"):
         if k in example and example[k] is not None:
             v = example[k]
@@ -39,7 +39,7 @@ def _coco_filename_from_id(image_id: int, split_tag: str) -> str:
     return f"COCO_{split_tag}2014_{int(image_id):012d}.jpg"
 
 # -----------------------------------------------------------------------------
-# Dataclasses (vereinheitlichte Rückgabe)
+# Dataclasses (unified return format)
 # -----------------------------------------------------------------------------
 
 @dataclass
@@ -63,7 +63,7 @@ class ACTXExample:
 @dataclass
 class ESNLIVEExample:
     image_path: str
-    premise: Optional[str]     # bei dir nicht vorhanden → bleibt None
+    premise: Optional[str]   
     hypothesis: str
     label: Optional[str]
     explanation: Optional[str]
@@ -75,14 +75,14 @@ class VCRExample:
     image_path: str
     question: Optional[str]
     answer: Optional[str]
-    choices: Optional[List[str]]   # in deiner Version nicht vorhanden
-    rationale: Optional[str]       # in deiner Version nicht vorhanden
+    choices: Optional[List[str]]   
+    rationale: Optional[str]       
     explanation: Optional[str]
     sample_id: Optional[str]
     raw: Dict[str, Any]
 
 # -----------------------------------------------------------------------------
-# VQA-X  (Top-Level = dict; answers = Liste von Dicts; image_name vorhanden)
+# VQA-X  (Top-level = dict; answers = list of dicts; image_name present)
 # -----------------------------------------------------------------------------
 
 def load_vqax(
@@ -94,38 +94,38 @@ def load_vqax(
     split = split.lower()
     fname_map = {"train": "vqaX_train.json", "val": "vqaX_val.json", "test": "vqaX_test.json"}
     if split not in fname_map:
-        raise ValueError("VQAX split muss 'train' | 'val' | 'test' sein.")
+        raise ValueError("VQA-X split must be 'train' | 'val' | 'test'.")
     ann_path = os.path.join(ann_root, fname_map[split])
     if not os.path.exists(ann_path):
-        raise FileNotFoundError(f"VQA-X nicht gefunden: {ann_path}")
+        raise FileNotFoundError(f"VQA-X not found: {ann_path}")
 
     with open(ann_path, "r", encoding="utf-8") as f:
         data = json.load(f)  # dict: {sample_id: { ... }, ...}
 
-    # in Liste der Beispiele überführen
+    # Convert to list of examples
     examples = list(data.values()) if isinstance(data, dict) else (data if isinstance(data, list) else [])
 
     results: List[VQAXExample] = []
-    # Primärer Bild-Unterordner nach Split:
+    # Primary image subdirectory based on split:
     coco_sub = "train2014" if split == "train" else "val2014"
     default_dir = os.path.join(images_root, coco_sub)
 
     for ex in examples:
-        # Frage
+        # Question
         question = str(ex.get("question", ""))
 
-        # Antwort (answers = Liste von Dicts mit Key "answer")
+        # Answer (answers = list of dicts with key "answer")
         answer = None
         ans_field = ex.get("answers")
         if isinstance(ans_field, list) and ans_field:
-            # Nimm die häufigste/erste – hier: erste
+            # Take the most common/first – here: first
             first = ans_field[0]
             if isinstance(first, dict):
                 answer = first.get("answer") or first.get("text") or None
             elif isinstance(first, str):
                 answer = first
 
-        # image_id (optional numerisch)
+        # image_id 
         image_id = ex.get("image_id")
         image_id_int: Optional[int] = None
         if image_id is not None:
@@ -136,38 +136,38 @@ def load_vqax(
                 if m:
                     image_id_int = int(m.group(1))
 
-        # Primär: image_name (voller COCO-Dateiname)
+        # Primary: image_name (full COCO filename)
         img_name = _first_nonempty(ex.get("image_name"), ex.get("image"), ex.get("filename"))
 
-        # Bildpfad bestimmen
+        # Determine image path
         img_path = ""
         tried = False
         if img_name:
             tried = True
-            # wenn image_name schon "COCO_val2014_..." enthält: entscheide Unterordner anhand des Namens
+            # If image_name already contains "COCO_val2014_...": decide subdirectory based on name
             if "train2014" in img_name:
                 img_path = os.path.join(images_root, "train2014", os.path.basename(img_name))
             elif "val2014" in img_name:
                 img_path = os.path.join(images_root, "val2014", os.path.basename(img_name))
             else:
-                # sonst Standard-Unterordner gemäß Split
+                # Otherwise use standard subdirectory according to split
                 img_path = os.path.join(default_dir, os.path.basename(img_name))
 
         if (not img_path or not os.path.exists(img_path)) and image_id_int is not None:
-            # Fallback über image_id → COCO-Dateiname konstruieren
+            # Fallback via image_id → construct COCO filename
             fname = _coco_filename_from_id(image_id_int, "train" if coco_sub == "train2014" else "val")
             cand = os.path.join(default_dir, fname)
             if os.path.exists(cand):
                 img_path = cand
 
         if (not img_path or not os.path.exists(img_path)) and img_name:
-            # Rekursive Suche als letzter Versuch
+            # Recursive search as last attempt
             alt = _search_recursively(images_root, os.path.basename(img_name))
             if alt:
                 img_path = alt
 
         if require_image and (not img_path or not os.path.exists(img_path)):
-            # Bild zwingend: überspringen
+            # Image required: skip
             continue
 
         results.append(VQAXExample(
@@ -183,7 +183,7 @@ def load_vqax(
     return results
 
 # -----------------------------------------------------------------------------
-# ACT-X  (Top-Level = dict; answers = Label-String; image_name)
+# ACT-X  (Top-level = dict; answers = label string; image_name)
 # -----------------------------------------------------------------------------
 
 def load_actx(
@@ -194,13 +194,13 @@ def load_actx(
 ) -> List[ACTXExample]:
     split = split.lower()
     if split in ("val", "valid", "validation"):
-        split = "test"  # es gibt bei dir kein val
+        split = "test"  # no val split available
     fname_map = {"train": "actX_train.json", "test": "actX_test.json"}
     if split not in fname_map:
-        raise ValueError("ACT-X split muss 'train' | 'test' sein (val→test).")
+        raise ValueError("ACT-X split must be 'train' | 'test' (val→test).")
     ann_path = os.path.join(ann_root, fname_map[split])
     if not os.path.exists(ann_path):
-        raise FileNotFoundError(f"ACT-X nicht gefunden: {ann_path}")
+        raise FileNotFoundError(f"ACT-X not found: {ann_path}")
 
     with open(ann_path, "r", encoding="utf-8") as f:
         data = json.load(f)  # dict
@@ -231,7 +231,7 @@ def load_actx(
     return results
 
 # -----------------------------------------------------------------------------
-# e-SNLI-VE  (Top-Level = Liste; answers = Label-String; image_name)
+# e-SNLI-VE  (Top-level = list; answers = label string; image_name)
 # -----------------------------------------------------------------------------
 
 def load_esnlive(
@@ -242,13 +242,13 @@ def load_esnlive(
 ) -> List[ESNLIVEExample]:
     split = split.lower()
     if split in ("val", "valid", "validation"):
-        split = "test"  # bei dir kein val
+        split = "test"  # no val split available
     fname_map = {"train": "esnlive_train.json", "test": "esnlive_test.json"}
     if split not in fname_map:
-        raise ValueError("eSNLI-VE split muss 'train' | 'test' sein (val→test).")
+        raise ValueError("e-SNLI-VE split must be 'train' | 'test' (val→test).")
     ann_path = os.path.join(ann_root, fname_map[split])
     if not os.path.exists(ann_path):
-        raise FileNotFoundError(f"eSNLI-VE nicht gefunden: {ann_path}")
+        raise FileNotFoundError(f"e-SNLI-VE not found: {ann_path}")
 
     with open(ann_path, "r", encoding="utf-8") as f:
         data = json.load(f)  # list
@@ -271,7 +271,7 @@ def load_esnlive(
         label = _first_nonempty(ex.get("answers"), ex.get("label"), ex.get("gold_label"), ex.get("relation"))
         results.append(ESNLIVEExample(
             image_path=img_path if img_path else (os.path.join(img_dir, img_name) if img_name else ""),
-            premise=None,  # in deiner Version nicht vorhanden
+            premise=None,  # not available in this version
             hypothesis=str(ex.get("hypothesis", "")),
             label=label,
             explanation=_norm_expl(ex),
@@ -281,7 +281,7 @@ def load_esnlive(
     return results
 
 # -----------------------------------------------------------------------------
-# VCR  (Top-Level = Liste; img_name = relativer Pfad unter vcr1images/)
+# VCR  (Top-level = list; img_name = relative path under vcr1images/)
 # -----------------------------------------------------------------------------
 
 def load_vcr(
@@ -293,10 +293,10 @@ def load_vcr(
     split = split.lower()
     fname_map = {"train": "vcr_train.json", "val": "vcr_val.json", "test": "vcr_test.json"}
     if split not in fname_map:
-        raise ValueError("VCR split muss 'train' | 'val' | 'test' sein.")
+        raise ValueError("VCR split must be 'train' | 'val' | 'test'.")
     ann_path = os.path.join(ann_root, fname_map[split])
     if not os.path.exists(ann_path):
-        raise FileNotFoundError(f"VCR nicht gefunden: {ann_path}")
+        raise FileNotFoundError(f"VCR not found: {ann_path}")
 
     with open(ann_path, "r", encoding="utf-8") as f:
         data = json.load(f)  # list
@@ -313,7 +313,7 @@ def load_vcr(
         img_path = os.path.join(vcr_root, img_rel) if img_rel else ""
 
         if img_rel and not os.path.exists(img_path):
-            # Fallback: nur Basename rekursiv suchen
+            # Fallback: recursively search for basename only
             alt = _search_recursively(vcr_root, os.path.basename(img_rel))
             if alt:
                 img_path = alt
@@ -353,4 +353,4 @@ def load_task(
         return load_esnlive(images_root, ann_root, split, require_image=require_image)
     if t == "vcr":
         return load_vcr(images_root, ann_root, split, require_image=require_image)
-    raise ValueError(f"Unbekannter Task: {task}")
+    raise ValueError(f"Unknown task: {task}")
