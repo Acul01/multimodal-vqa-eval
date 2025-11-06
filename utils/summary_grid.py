@@ -93,10 +93,19 @@ def _save_grid(project_root: str, df: pd.DataFrame) -> str:
         df.to_excel(excel_path, index=False, engine='openpyxl')
     except ImportError:
         # If openpyxl is not installed, skip Excel export
-        pass
-    except Exception:
+        import warnings
+        warnings.warn(
+            "openpyxl is not installed. Excel export skipped. "
+            "Install with: pip install openpyxl",
+            UserWarning
+        )
+    except Exception as e:
         # If any other error occurs, skip Excel export
-        pass
+        import warnings
+        warnings.warn(
+            f"Failed to save Excel file: {e}. CSV file saved successfully.",
+            UserWarning
+        )
     
     return csv_path
 
