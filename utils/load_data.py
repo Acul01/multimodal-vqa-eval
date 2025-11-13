@@ -284,53 +284,135 @@ def load_esnlive(
 # VCR  (Top-level = list; img_name = relative path under vcr1images/)
 # -----------------------------------------------------------------------------
 
+# -----------------------------------------------------------------------------
+# VCR (original)  - Multi-choice with 4 answer options
+# Folder: VCR_original with
+#   - vcr_train_split.json
+#   - vcr_dev_split.json    (used as 'val')
+#   - vcr_valtest.json      (used as 'test')
+# -----------------------------------------------------------------------------
+
 def load_vcr(
     images_root: str,
     ann_root: str,
     split: str = "train",
     require_image: bool = True,
 ) -> List[VCRExample]:
+    """
+    Load the original VCR multi-choice annotations.
+
+    Expected JSON structure per example (simplified):
+
+        {
+          "img_id": "vcr_val_...@0.npz",
+          "raw_img_id": "lsmdc_.../....@0.jpg",
+          "sent": "Does <det1> live in this house ?",
+          "answer_choices": [
+              "No, <det1> lives nowhere close.",
+              "Yes, <det1> works there.",
+              "No, <det1> is a visitor.",
+              "No <det2> does not belong here."
+          ],
+          "label": 2,
+          "explanation": "<det1> is wearing outerwear, holding an umbrella ...",
+          "objects": [...],
+          "question_id": "val-1",
+          ...
+        }
+
+    We return:
+      - question: ex["sent"]
+      - choices: list of 4 answer choices
+      - answer: the correct answer text = choices[label]
+      - explanation: textual explanation (if present)
+      - image_path: resolved under images_root/vcr1images
+    """
     split = split.lower()
-    fname_map = {"train": "vcr_train.json", "val": "vcr_val.json", "test": "vcr_test.json"}
+    fname_map = {
+        "train": "vcr_train_split.json",
+        "val":   "vcr_dev_split.json",
+        "test":  "vcr_valtest.json",
+    }
     if split not in fname_map:
         raise ValueError("VCR split must be 'train' | 'val' | 'test'.")
+
     ann_path = os.path.join(ann_root, fname_map[split])
     if not os.path.exists(ann_path):
-        raise FileNotFoundError(f"VCR not found: {ann_path}")
+        raise FileNotFoundError(f"VCR original annotations not found: {ann_path}")
 
     with open(ann_path, "r", encoding="utf-8") as f:
-        data = json.load(f)  # list
+        data = json.load(f)
 
+    # Top-level is usually a list
     examples = data if isinstance(data, list) else (list(data.values()) if isinstance(data, dict) else [])
     results: List[VCRExample] = []
+
     vcr_root = os.path.join(images_root, "vcr1images")
 
     for ex in examples:
-        img_name = _first_nonempty(ex.get("img_name"), ex.get("image"), ex.get("filename")) or ""
-        img_rel = img_name.lstrip("/")
+        # ---- Image path resolution ----
+        # Prefer the explicit raw_img_id (relative path under vcr1images/)
+        img_rel = _first_nonempty(ex.get("raw_img_id"), ex.get("raw_img"), "")
+
+        if img_rel:
+            img_rel = img_rel.lstrip("/")
+        else:
+            # Fallback: derive from .npz img_id (replace .npz → .jpg)
+            img_id = ex.get("img_id") or ""
+            if img_id:
+                guess = img_id.replace(".npz", ".jpg").lstrip("/")
+                img_rel = guess
+
+        # strip potential "vcr1images/" prefix if present
         if img_rel.startswith("vcr1images/"):
             img_rel = img_rel[len("vcr1images/"):]
+
         img_path = os.path.join(vcr_root, img_rel) if img_rel else ""
 
         if img_rel and not os.path.exists(img_path):
-            # Fallback: recursively search for basename only
+            # Fallback: recursively search by basename
             alt = _search_recursively(vcr_root, os.path.basename(img_rel))
             if alt:
                 img_path = alt
 
         if require_image and (not img_path or not os.path.exists(img_path)):
+            # Skip samples without a resolvable image if required
             continue
 
-        results.append(VCRExample(
-            image_path=img_path if img_path else (os.path.join(vcr_root, img_rel) if img_rel else ""),
-            question=ex.get("question"),
-            answer=_first_nonempty(ex.get("answers"), ex.get("label")),
-            choices=None,
-            rationale=None,
-            explanation=_norm_expl(ex),
-            sample_id=str(ex.get("image_id") or ex.get("id") or ""),
-            raw=ex,
-        ))
+        # ---- Question ----
+        question = ex.get("sent") or ex.get("question") or ""
+
+        # ---- Answer choices + correct answer ----
+        choices = ex.get("answer_choices") or ex.get("answers") or []
+        if not isinstance(choices, list):
+            choices = list(choices)  # be defensive
+
+        label_idx = ex.get("label")
+        answer_text: Optional[str] = None
+        if isinstance(label_idx, int) and 0 <= label_idx < len(choices):
+            answer_text = choices[label_idx]
+
+        # ---- Explanation / rationale ----
+        explanation = _norm_expl(ex)  # will pick ex["explanation"] if present
+
+        results.append(
+            VCRExample(
+                image_path=img_path if img_path else (os.path.join(vcr_root, img_rel) if img_rel else ""),
+                question=str(question),
+                answer=answer_text,
+                choices=choices,
+                rationale=None,       # separate rationale choices are not provided here
+                explanation=explanation,
+                sample_id=str(
+                    ex.get("question_id")
+                    or ex.get("img_id")
+                    or ex.get("id")
+                    or ""
+                ),
+                raw=ex,
+            )
+        )
+
     return results
 
 # -----------------------------------------------------------------------------
