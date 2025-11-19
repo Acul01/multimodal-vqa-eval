@@ -11,6 +11,14 @@ from utils.load_data import (
     load_vqax, load_actx, load_esnlive, load_vcr
 )
 
+# import unified answer-only prompting templates
+from utils.prompting_templates import (
+    prompt_vqax_answer_only,
+    prompt_actx_answer_only,
+    prompt_esnlive_answer_only,
+    prompt_vcr_answer_only,
+)
+
 # -----------------------------
 # Canonical task mapping
 # -----------------------------
@@ -115,93 +123,6 @@ def _answer_only_from_freeform(text: str, max_tokens: int = 3) -> str:
     if not toks:
         return ""
     return " ".join(toks[:max_tokens])
-
-# -----------------------------
-# Prompt builders (answer only, zero-shot)
-# -----------------------------
-def build_prompt_vqax(question: str):
-    instructions = (
-        "You see an image and a question.\n"
-        "Answer with ONLY the short answer (one or two words).\n"
-        "Do NOT explain."
-    )
-    return [{
-        "role": "user",
-        "content": [
-            {"type": "text", "text": f"{instructions}\nQuestion: {question}"},
-            {"type": "image"},
-        ],
-    }]
-
-def build_prompt_actx(_unused: str = ""):
-    instructions = (
-        "You see an image of a person doing an activity.\n"
-        "Answer with ONLY the activity label (at most three words).\n"
-        "Do NOT explain."
-    )
-    return [{
-        "role": "user",
-        "content": [
-            {"type": "text", "text": instructions},
-            {"type": "image"},
-        ],
-    }]
-
-def build_prompt_esnlive(hypothesis: str):
-    """
-    Zero-shot prompt for e-SNLI-VE:
-    output must be exactly one of: entailment / contradiction / neutral.
-    """
-    instructions = (
-        "You see an image and a hypothesis.\n"
-        "Decide the relationship between them.\n"
-        "Answer with EXACTLY ONE WORD: entailment, contradiction, or neutral.\n"
-        "Do NOT explain."
-    )
-    return [{
-        "role": "user",
-        "content": [
-            {"type": "text", "text": f"{instructions}\nHypothesis: {hypothesis}"},
-            {"type": "image"},
-        ],
-    }]
-
-def build_prompt_vcr(question: str, choices: List[str]):
-    """
-    Multi-choice prompt for original VCR (4 answer choices).
-    The model must answer with a SINGLE letter: A, B, C, or D.
-    """
-    pad_texts = ["Option missing"] * max(0, 4 - len(choices))
-    opts = (choices[:4] + pad_texts)[:4]
-
-    instructions = (
-        "You see an image and a question.\n"
-        "Four answer options are given.\n"
-        "Choose ONLY the best option.\n"
-        "Respond with exactly ONE LETTER: A, B, C, or D.\n"
-        "Do NOT explain and do NOT repeat the question."
-    )
-
-    question_block = (
-        f"Question: {question}\n\n"
-        "Options:\n"
-        f"A) {opts[0]}\n"
-        f"B) {opts[1]}\n"
-        f"C) {opts[2]}\n"
-        f"D) {opts[3]}"
-    )
-
-    full_text = instructions + "\n\n" + question_block
-
-    return [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": full_text},
-                {"type": "image"},
-            ],
-        }
-    ]
 
 # -----------------------------
 # VCR-specific helpers
@@ -332,7 +253,9 @@ def run_vqa_task(
 
         if task == "VQA-X":
             gt = majority_vqa_answer(s.raw.get("answers"))
-            prompt = build_prompt_vqax(s.question)
+
+            # unified answer-only prompt
+            prompt = prompt_vqax_answer_only(s.question)
             raw_pred = generate_answer(model, processor, s.image_path, prompt)
             pred_ans = _answer_only_from_freeform(raw_pred, max_tokens=2)
             hit = int(normalize_ans(pred_ans) == normalize_ans(gt)) if gt else None
@@ -351,7 +274,9 @@ def run_vqa_task(
 
         elif task == "ACT-X":
             gt = s.label
-            prompt = build_prompt_actx("")
+
+            # unified answer-only prompt
+            prompt = prompt_actx_answer_only()
             raw_pred = generate_answer(model, processor, s.image_path, prompt)
             pred_ans = _answer_only_from_freeform(raw_pred, max_tokens=3)
             hit = int(normalize_ans(pred_ans) == normalize_ans(gt)) if gt else None
@@ -370,7 +295,9 @@ def run_vqa_task(
 
         elif task == "ESNLI-VE":
             gt = s.label
-            prompt = build_prompt_esnlive(s.hypothesis)
+
+            # unified answer-only prompt
+            prompt = prompt_esnlive_answer_only(s.hypothesis)
             raw_pred = generate_answer(model, processor, s.image_path, prompt)
             label = _force_label_space(raw_pred)
             pred_ans = label
@@ -400,8 +327,8 @@ def run_vqa_task(
             if len(choice_texts) != 4:
                 choice_texts = (choice_texts + ["Option missing"] * 4)[:4]
 
-            # Prompt with dedicated builder
-            prompt = build_prompt_vcr(s.question or "", choice_texts)
+            # unified answer-only prompt (letter only)
+            prompt = prompt_vcr_answer_only(s.question or "", choice_texts)
 
             raw_pred = generate_answer(model, processor, s.image_path, prompt)
             letter = _parse_vcr_letter(raw_pred)

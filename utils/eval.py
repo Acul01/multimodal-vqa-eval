@@ -2,13 +2,32 @@
 from __future__ import annotations
 import os
 import re
+import json
 from typing import List, Dict, Tuple, Optional
 
 import pandas as pd
 
 from utils.load_data import load_vqax, load_actx, load_esnlive, load_vcr
 
+from sentence_transformers import SentenceTransformer, util
+
+try:
+    SEM_MODEL = SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
+except Exception:
+    SEM_MODEL = None
+    print("Warning: Could not load semantic similarity model!")
+
 _ARTICLES = {"a", "an", "the"}
+
+def semantic_similarity(a: str, b: str) -> float:
+    if SEM_MODEL is None:
+        return 0.0
+    if not a or not b:
+        return 0.0
+
+    emb = SEM_MODEL.encode([a, b], convert_to_tensor=True)
+    sim = util.cos_sim(emb[0], emb[1]).item()
+    return float(sim)
 
 
 def _normalize_answer(s: Optional[str]) -> str:
@@ -65,7 +84,7 @@ def evaluate_vqax_to_csv(
 
     Columns:
         image_id, question, gt_answer, generated_answer,
-        gt_explanation, generated_explanation, correct (0/1)
+        gt_explanation, generated_explanation, correct (0/1), token_entropy
     """
     # 1) Load GT explanations and image_ids from NLE
     gt_samples = load_vqax(images_root, nle_root_vqax, split=split, require_image=False)
@@ -97,6 +116,10 @@ def evaluate_vqax_to_csv(
             m = re.search(r"(\d+)", os.path.basename(img_path))
             image_id = int(m.group(1)) if m else None
 
+        # token-wise entropy (dict) from results; store as JSON string
+        entropy_dict = r.get("token_entropy", None)
+        entropy_str = json.dumps(entropy_dict) if entropy_dict is not None else None
+
         rows.append({
             "image_id": image_id,
             "question": r.get("question", ""),
@@ -105,11 +128,13 @@ def evaluate_vqax_to_csv(
             "gt_explanation": gt_info.get("gt_expl", ""),
             "generated_explanation": pred_expl,
             "correct": correct,
+            "token_entropy": entropy_str,
         })
 
     df = pd.DataFrame(rows, columns=[
         "image_id", "question", "gt_answer", "generated_answer",
-        "gt_explanation", "generated_explanation", "correct"
+        "gt_explanation", "generated_explanation", "correct",
+        "token_entropy",
     ])
 
     os.makedirs(save_dir, exist_ok=True)
@@ -133,7 +158,7 @@ def evaluate_actx_to_csv(
 
     Columns:
         image_id, gt_label, generated_label,
-        gt_explanation, generated_explanation, correct
+        gt_explanation, generated_explanation, correct, token_entropy
     """
     gt_samples = load_actx(images_root, nle_root_actx, split=split, require_image=False)
     gt_by_path = {}
@@ -165,6 +190,9 @@ def evaluate_actx_to_csv(
             m = re.search(r"(\d+)", os.path.basename(img_path))
             image_id = int(m.group(1)) if m else None
 
+        entropy_dict = r.get("token_entropy", None)
+        entropy_str = json.dumps(entropy_dict) if entropy_dict is not None else None
+
         rows.append({
             "image_id": image_id,
             "gt_label": gt_label,
@@ -172,11 +200,13 @@ def evaluate_actx_to_csv(
             "gt_explanation": info.get("gt_expl", ""),
             "generated_explanation": pred_expl,
             "correct": correct,
+            "token_entropy": entropy_str,
         })
 
     df = pd.DataFrame(rows, columns=[
         "image_id", "gt_label", "generated_label",
-        "gt_explanation", "generated_explanation", "correct"
+        "gt_explanation", "generated_explanation", "correct",
+        "token_entropy",
     ])
 
     os.makedirs(save_dir, exist_ok=True)
@@ -200,7 +230,8 @@ def evaluate_esnlive_to_csv(
 
     Columns:
       image_name, image_numeric_id (optional, parsed), hypothesis,
-      gt_label, generated_label, gt_explanation, generated_explanation, correct
+      gt_label, generated_label, gt_explanation, generated_explanation,
+      correct, token_entropy
     """
     gt_samples = load_esnlive(images_root, nle_root_esnlive, split=split, require_image=False)
 
@@ -258,6 +289,9 @@ def evaluate_esnlive_to_csv(
         m = re.search(r"(\d+)", base_name)
         numeric_id = int(m.group(1)) if m else None
 
+        entropy_dict = r.get("token_entropy", None)
+        entropy_str = json.dumps(entropy_dict) if entropy_dict is not None else None
+
         rows.append({
             "image_name": info.get("image_name") or base_name,
             "image_numeric_id": numeric_id,
@@ -267,13 +301,14 @@ def evaluate_esnlive_to_csv(
             "gt_explanation": info.get("gt_expl", ""),
             "generated_explanation": gen_expl,
             "correct": correct,
+            "token_entropy": entropy_str,
         })
 
     df = pd.DataFrame(rows, columns=[
         "image_name", "image_numeric_id", "hypothesis",
         "gt_label", "generated_label",
         "gt_explanation", "generated_explanation",
-        "correct",
+        "correct", "token_entropy",
     ])
 
     os.makedirs(save_dir, exist_ok=True)
@@ -295,7 +330,7 @@ def evaluate_vcr_to_csv(
     """
     Save VCR results as CSV with:
     image_name, question, gt_answer, generated_answer,
-    gt_explanation, generated_explanation, options, correct
+    gt_explanation, generated_explanation, options, correct, token_entropy
 
     'options' contains all 4 multiple-choice answers as a single string.
     """
@@ -353,6 +388,9 @@ def evaluate_vcr_to_csv(
         choices = info.get("choices", [])
         options_str = " || ".join(choices) if choices else ""
 
+        entropy_dict = r.get("token_entropy", None)
+        entropy_str = json.dumps(entropy_dict) if entropy_dict is not None else None
+
         rows.append({
             "image_name": info["image_name"],
             "question": info["question"],
@@ -362,6 +400,7 @@ def evaluate_vcr_to_csv(
             "generated_explanation": gen_expl,
             "options": options_str,
             "correct": correct,
+            "token_entropy": entropy_str,
         })
 
     df = pd.DataFrame(rows, columns=[
@@ -373,6 +412,7 @@ def evaluate_vcr_to_csv(
         "generated_explanation",
         "options",
         "correct",
+        "token_entropy",
     ])
 
     os.makedirs(save_dir, exist_ok=True)
@@ -432,21 +472,74 @@ def evaluate_actx_answers_only_to_csv(
 ) -> str:
     """
     Save a CSV with answers only for ACT-X.
-    Columns: image_name, gt_label, generated_label, correct
+    Includes:
+      - image_name
+      - gt_label
+      - generated_label
+      - correct_exact  (exact string match)
+      - semantic_similarity (cosine sim)
+      - correct_soft (similarity >= 0.7)
     """
+    # ---- load sentence transformer (global var assumed) ----
+    from sentence_transformers import SentenceTransformer, util
+    import torch
+
+    # Lazy global loading → avoids loading model multiple times
+    global SEM_MODEL
+    try:
+        SEM_MODEL
+    except NameError:
+        SEM_MODEL = SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
+
+    def semantic_similarity(a: str, b: str) -> float:
+        if not a or not b:
+            return 0.0
+        emb = SEM_MODEL.encode([a, b], convert_to_tensor=True)
+        sim = util.cos_sim(emb[0], emb[1]).item()
+        return float(sim)
+
+    # ------------------------------
+    # Build rows
+    # ------------------------------
     rows = []
     for r in results:
         img_path = r.get("image", "") or ""
         img_name = os.path.basename(img_path)
+
+        gt_label = r.get("ground_truth", "") or ""
+        pred_label = r.get("prediction", "") or ""
+
+        # Replace underscores, lowercase – prediction is usually free text
+        pred_label_clean = pred_label.strip()
+
+        # Semantic similarity score
+        sim = semantic_similarity(gt_label, pred_label_clean)
+
+        # Soft correctness based on similarity threshold
+        soft_correct = 1 if sim >= 0.70 else 0
+
+        # Exact correctness
+        exact_correct = int(r.get("correct", 0) or 0)
+
         rows.append({
             "image_name": img_name,
-            "gt_label": r.get("ground_truth", ""),
-            "generated_label": r.get("prediction", ""),
-            "correct": int(r.get("correct", 0) or 0),
+            "gt_label": gt_label,
+            "generated_label": pred_label_clean,
+            "correct_exact": exact_correct,
+            "semantic_similarity": sim,
+            "correct_soft": soft_correct,
         })
 
+    # ------------------------------
+    # Save CSV
+    # ------------------------------
     df = pd.DataFrame(rows, columns=[
-        "image_name", "gt_label", "generated_label", "correct"
+        "image_name",
+        "gt_label",
+        "generated_label",
+        "correct_exact",
+        "semantic_similarity",
+        "correct_soft",
     ])
 
     os.makedirs(save_dir, exist_ok=True)
@@ -454,6 +547,11 @@ def evaluate_actx_answers_only_to_csv(
         save_name = f"actx_{split}_answers.csv"
     out_path = os.path.join(save_dir, save_name)
     df.to_csv(out_path, index=False)
+
+    print(f"Saved ACT-X CSV with semantic similarity → {out_path}")
+    print(f"Mean semantic similarity: {df['semantic_similarity'].mean():.3f}")
+    print(f"Soft accuracy (>=0.7): {df['correct_soft'].mean():.3f}")
+
     return out_path
 
 

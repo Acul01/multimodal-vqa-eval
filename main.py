@@ -49,7 +49,7 @@ def parse_args():
     parser.add_argument(
         "--n_samples",
         type=int,
-        default=10,
+        default=None,
         help="Number of samples to run (None = full split).",
     )
     parser.add_argument(
@@ -58,6 +58,13 @@ def parse_args():
         default="true",
         choices=["true", "false"],
         help="Whether to generate explanations (true) or answers only (false).",
+    )
+    parser.add_argument(
+        "--prompt_mode",
+        type=str,
+        default="zero",
+        choices=["zero", "1shot", "3shot"],
+        help="Prompting style when generate_explanations=true: zero / 1shot / 3shot.",
     )
     return parser.parse_args()
 
@@ -73,6 +80,44 @@ def accuracy_from_results(results):
     return sum(hits) / len(hits)
 
 
+def compute_explanation_stats(results):
+    """
+    results: Liste von Dicts mit Schlüssel 'prediction' im Format
+             '<answer> because <explanation>'.
+
+    Wir zählen eine Explanation als *verwertbar*, wenn:
+      - es einen 'because'-Teil gibt
+      - der Explanation-Text NICHT einer Platzhalter-Phrase entspricht
+        wie 'no further details' oder 'explanation missing'.
+    """
+    placeholder_expls = {
+        "no further details",
+        "explanation missing",
+    }
+
+    total = len(results)
+    if total == 0:
+        return 0, 0.0  # (valid_count, valid_pct)
+
+    valid_count = 0
+
+    for r in results:
+        pred = (r.get("prediction") or "").strip().lower()
+        if " because " not in pred:
+            continue
+        _, _, expl = pred.partition(" because ")
+        expl = expl.strip()
+        if not expl:
+            continue
+        if expl in placeholder_expls:
+            continue
+        # Alles was nicht Placeholder ist und nicht leer → verwertbar
+        valid_count += 1
+
+    valid_pct = 100.0 * valid_count / total
+    return valid_count, valid_pct
+
+
 # -------------------------
 # Main
 # -------------------------
@@ -80,10 +125,13 @@ def main():
     args = parse_args()
     gen_expl = args.generate_explanations.lower() == "true"
 
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
+
     print(
         f"\nRunning task={args.task.upper()} | model={args.model.upper()} "
         f"| split={args.split} | n_samples={args.n_samples} "
-        f"| explanations={gen_expl}"
+        f"| explanations={gen_expl} | prompt_mode={args.prompt_mode}"
     )
 
     project_root = os.path.dirname(os.path.abspath(__file__))
@@ -116,20 +164,35 @@ def main():
     if model_name == "llava":
         model_id = "llava-hf/llava-1.5-7b-hf"
         processor = AutoProcessor.from_pretrained(model_id)
+
+        model_dtype = torch.float16 if device == "cuda" else torch.float32
+        
         model = LlavaForConditionalGeneration.from_pretrained(
             model_id,
-            torch_dtype=torch.float16,
+            torch_dtype=model_dtype,
             low_cpu_mem_usage=True,
-        ).to("cuda")
+        ).to(device)
 
     elif model_name == "qwen":
         model_id = "Qwen/Qwen3-VL-8B-Instruct"
         processor = AutoProcessor.from_pretrained(model_id)
-        # single-GPU, no device_map/accelerate
-        model = Qwen3VLForConditionalGeneration.from_pretrained(
-            model_id,
-            torch_dtype=torch.bfloat16,  # use float16 if bf16 not available
-        ).to("cuda")
+
+        model_dtype = torch.float16 if device == "cuda" else torch.float32
+
+        if device == "cuda":
+            model = Qwen3VLForConditionalGeneration.from_pretrained(
+                model_id,
+                torch_dtype=model_dtype, 
+                low_cpu_mem_usage=True,
+                device_map="auto",
+            ).to(device)
+            
+        else:
+            model = Qwen3VLForConditionalGeneration.from_pretrained(
+                model_id,
+                torch_dtype=model_dtype, 
+                low_cpu_mem_usage=True,
+            ).to("cpu")
 
     else:
         raise ValueError(f"Unknown model type: {args.model}")
@@ -147,15 +210,29 @@ def main():
     # -------------------------
     # Run task
     # -------------------------
-    results = run_vqa_task(
-        task_key,
-        model,
-        processor,
-        images_root,
-        nle_root,
-        split=args.split,
-        n_samples=args.n_samples,
-    )
+    if gen_expl:
+        # mit Erklärungen → run_vqa_tasks.py erwartet prompt_mode
+        results = run_vqa_task(
+            task_key,
+            model,
+            processor,
+            images_root,
+            nle_root,
+            split=args.split,
+            n_samples=args.n_samples,
+            prompt_mode=args.prompt_mode,
+            )
+    else:
+        # answers only → aktuelle noEx-Version kennt kein prompt_mode
+        results = run_vqa_task(
+            task_key,
+            model,
+            processor,
+            images_root,
+            nle_root,
+            split=args.split,
+            n_samples=args.n_samples,
+        )
 
     # -------------------------
     # Evaluate + CSV export
@@ -197,7 +274,7 @@ def main():
         else:
             out_csv = None
     else:
-        # answers-only CSVs
+        # answers-only CSVs (Signaturen: results, split, save_dir, save_name=None)
         if task_key == "VQA-X":
             out_csv = evaluate_vqax_answers_only_to_csv(
                 results,
@@ -235,19 +312,51 @@ def main():
     # -------------------------
     # Update accuracy grid for this mode (with/without)
     # -------------------------
-    acc = accuracy_from_results(results)
+        acc = accuracy_from_results(results)
+
+    print(f"[DEBUG]: len_results: {len(results)}")
+
+    # effektive Anzahl Samples im Lauf (falls n_samples=None -> volle Länge)
+    effective_n = args.n_samples if args.n_samples is not None else len(results)
+
     if acc is not None:
         grid_out = update_best(
             results_root=results_root,
             task=task_key,
             model=model_name,
             split=args.split,
-            n_samples=args.n_samples,
+            n_samples=effective_n,
             accuracy=acc,
         )
         print(f"Updated grid: {os.path.relpath(grid_out, project_root)}")
     else:
         print("No valid accuracy could be computed (no 'correct' entries).")
+
+    # -------------------------------------------------
+    # NEU: Explanation-Stats nur für generate_explanations = True
+    # -------------------------------------------------
+    if gen_expl:
+        from utils.expl_summary import init_expl_table, append_expl_run
+
+        init_expl_table(results_root)
+        valid_count, valid_pct = compute_explanation_stats(results)
+
+        expl_path = append_expl_run(
+            results_root=results_root,
+            model=model_name,
+            task=task_key,
+            split=args.split,
+            prompt_mode=args.prompt_mode,
+            accuracy=acc,
+            n_samples=effective_n,
+            valid_expl_pct=valid_pct,
+            valid_expl_count=valid_count,
+            total_samples=len(results),
+        )
+        print(
+            f"Explanation stats updated: {os.path.relpath(expl_path, project_root)} "
+            f"(valid explanations: {valid_count}/{len(results)} = {valid_pct:.1f}%)"
+        )
 
     print("\nDone.\n")
 

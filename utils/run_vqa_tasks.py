@@ -1,8 +1,11 @@
+# utils/run_vqa_tasks.py
+# -*- coding: utf-8 -*-
 import os
 import re
 from typing import List, Dict, Optional
 from PIL import Image
 import torch, copy
+import torch.nn.functional as F
 
 from utils.load_data import (
     load_vqax, load_actx, load_esnlive, load_vcr
@@ -28,7 +31,7 @@ ANN_DIR_MAP = {
     "VQA-X":    "VQA-X",
     "ACT-X":    "ACT-X",
     "ESNLI-VE": "eSNLI-VE",     # lowercase 'e' on disk
-    "VCR":      "VCR", # <- NEU: echter VCR-Ordner
+    "VCR":      "VCR",
 }
 
 # -----------------------------
@@ -65,26 +68,33 @@ def _postprocess_pred_because_expl(text: str) -> str:
     Only fixes minimal structure, keeps explanation text intact if available.
     """
     t = (text or "").strip()
-    t = re.sub(r'^(?:assistant:|response:|answer:|question:)\s*', '', t, flags=re.I)
+    # remove prefixes like "assistant:", "answer:", ...
+    t = re.sub(r'^(?:assistant:|response:|answer:|question:)\s*', "", t, flags=re.I)
     t = t.replace("\n", " ").strip()
 
-    if " because " not in t.lower():
+    if "because" not in t.lower():
         toks = t.split()
         if toks and toks[0].lower() in ["entailment", "contradiction", "neutral"]:
+            return f"{toks[0].lower()} because explanation missing"
+        elif toks:
             return f"{toks[0].lower()} because explanation missing"
         else:
             return "unknown because explanation missing"
 
-    label, _, explanation = re.split(r"\bbecause\b", t, maxsplit=1, flags=re.I)
-    label = label.lower().strip().split()[0] if label else "unknown"
-    explanation = explanation.strip().rstrip(".").lower()
+    parts = re.split(r"\bbecause\b", t, maxsplit=1, flags=re.I)
+    label = parts[0].strip().lower() if len(parts) >= 1 else "unknown"
+    explanation = parts[1].strip().rstrip(".").lower() if len(parts) >= 2 else "explanation missing"
+
+    if not label:
+        label = "unknown"
     if not explanation:
         explanation = "explanation missing"
+
     return f"{label} because {explanation}"
 
 def _force_label_space(label: str) -> str:
     """Restrict label to one of the 3 valid options."""
-    l = label.lower().strip()
+    l = (label or "").lower().strip()
     if "entail" in l:
         return "entailment"
     if "contradict" in l:
@@ -128,11 +138,13 @@ def _postprocess_vqax(text: str) -> str:
     """
     Normalize VQA-X to '<prediction> because <explanation>' (lowercase).
     - prediction: 1–2 words, no punctuation
-    - if 'because' missing: split heuristically (first 1–2 words = prediction)
+    - if 'because' missing: derive prediction from first 1–2 tokens
     """
     t = (text or "").strip()
     t = re.sub(r'^(?:assistant:|response:|answer:|question:)\s*', '', t, flags=re.I)
     t = t.replace("\n", " ").strip()
+
+    print(f"[DBG] generated_text: {t}")
 
     left, right = _split_on_because(t)
 
@@ -148,64 +160,121 @@ def _postprocess_vqax(text: str) -> str:
     return f"{pred} because {expl}"
 
 # -----------------------------
-# Prompt builders
+# Prompt builders (with modes)
 # -----------------------------
-POSTPROCESSORS = {
-    "VQA-X": _postprocess_vqax,
-    "ACT-X": _postprocess_pred_because_expl,
-    "ESNLI-VE": _postprocess_pred_because_expl,
-    "VCR": _postprocess_pred_because_expl,   # für generische Fälle, VCR macht unten eigenes Handling
-}
+def _resolve_shot_count(prompt_mode: str) -> int:
+    """
+    Map prompt_mode to number of few-shot examples:
+      'zero'  -> 0
+      '1shot' -> 1
+      '3shot' -> 3
+    """
+    m = (prompt_mode or "zero").lower()
+    if m.startswith("1"):
+        return 1
+    if m.startswith("3"):
+        return 3
+    return 0
 
-def build_prompt_vqax(question: str):
+def build_prompt_vqax(question: str, prompt_mode: str = "zero"):
+    fewshot_examples = [
+        {
+            "q": "What is the man holding?",
+            "a": "guitar because he is holding a stringed instrument across his body",
+        },
+        {
+            "q": "What color is the bus?",
+            "a": "yellow because the vehicle is painted bright yellow",
+        },
+        {
+            "q": "What is the woman doing?",
+            "a": "cooking because she is standing in front of a stove with pans",
+        },
+    ]
+    k = _resolve_shot_count(prompt_mode)
+    conversation: List[Dict] = []
+
+    for ex in fewshot_examples[:k]:
+        conversation.append({
+            "role": "user",
+            "content": [{"type": "text", "text": f"Question: {ex['q']}"}],
+        })
+        conversation.append({
+            "role": "assistant",
+            "content": [{"type": "text", "text": ex["a"]}],
+        })
+
     instructions = (
-        "You are a visual question answering assistant.\n"
-        "Answer in EXACTLY one sentence using this strict format:\n"
-        "<prediction> because <explanation>\n"
-        "- <prediction> = first 1 or 2 words ONLY (no punctuation)\n"
-        "- use lowercase 'because' exactly once as the separator\n"
-        "- keep the explanation short (<= 20 words)\n"
-        "Do NOT add any extra words before or after the sentence.\n"
+        "You see an IMAGE and a QUESTION.\n"
+        "Answer the question in exactly one sentence using this format:\n"
+        "<answer> because <explanation>\n"
         f"Question: {question}"
     )
-    return [{
+    conversation.append({
         "role": "user",
         "content": [
             {"type": "text", "text": instructions},
             {"type": "image"},
         ],
-    }]
+    })
+    return conversation
 
-def build_prompt_actx(_unused: str = ""):
+def build_prompt_actx(_unused: str = "", prompt_mode: str = "zero"):
+    fewshot_examples = [
+        {
+            "d": "A person is moving quickly on a red athletics track.",
+            "a": "running because the person is moving fast along the track",
+        },
+        {
+            "d": "A woman is standing at a stove holding a pan with steam rising.",
+            "a": "cooking because she is preparing food on the stove",
+        },
+        {
+            "d": "A man is sitting on a chair holding an acoustic guitar.",
+            "a": "playing guitar because he is holding and strumming a guitar",
+        },
+    ]
+
+    k = _resolve_shot_count(prompt_mode)
+    conversation: List[Dict] = []
+
+    for ex in fewshot_examples[:k]:
+        conversation.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": f"Image description: {ex['d']}"},
+            ],
+        })
+        conversation.append({
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": ex["a"]},
+            ],
+        })
+
     instructions = (
-        "You are an activity recognition assistant.\n"
-        "Answer in EXACTLY one sentence using this strict format:\n"
+        "You will be shown an IMAGE.\n"
+        "Identify the activity shown in the image and answer in EXACTLY this format:\n"
         "<activity> because <explanation>\n"
-        "- <activity> = first 1 or 2 words ONLY (no punctuation)\n"
-        "- separator must be exactly 'because' (lowercase)\n"
-        "- keep the explanation short (<= 20 words)\n"
-        "Do NOT add any extra words before or after the sentence."
     )
-    return [{
+
+    conversation.append({
         "role": "user",
         "content": [
             {"type": "text", "text": instructions},
             {"type": "image"},
         ],
-    }]
+    })
 
-def build_prompt_esnlive(hypothesis: str):
-    """
-    Few-shot prompt for e-SNLI-VE.
-    The few-shot examples are text-only; the actual sample includes one image.
-    """
+    return conversation
+
+def build_prompt_esnlive(hypothesis: str, prompt_mode: str = "zero"):
     intro = (
         "You are a visual entailment assistant. "
         "Given an IMAGE and a HYPOTHESIS, decide the relationship and explain briefly. "
         "Answer in EXACTLY this format: <label> because <explanation>. "
         "The <label> must be one of: entailment, contradiction, or neutral. "
-        "Use 'because' exactly once, and keep the explanation under 15 words. "
-        "Do not add extra words or restate the hypothesis."
+        "Use 'because' exactly once, explanation <= 15 words."
     )
 
     fewshot_examples = [
@@ -222,9 +291,11 @@ def build_prompt_esnlive(hypothesis: str):
             "assistant": "neutral because the kitchen scene could involve cooking or cleaning",
         },
     ]
+    k = _resolve_shot_count(prompt_mode)
 
-    conversation = []
-    for ex in fewshot_examples:
+    conversation: List[Dict] = []
+
+    for ex in fewshot_examples[:k]:
         conversation.append({
             "role": "user",
             "content": [{"type": "text", "text": ex["user"]}],
@@ -244,14 +315,48 @@ def build_prompt_esnlive(hypothesis: str):
     })
     return conversation
 
-def build_prompt_vcr(question: str, choices: List[str]):
-    """
-    Multi-choice prompt for original VCR (4 answer choices).
-    The model is asked to pick A/B/C/D and may optionally give an explanation.
-    """
-    # Ensure we have exactly 4 options (pad if dataset is weird)
+def build_prompt_vcr(question: str, choices: List[str], prompt_mode: str = "zero"):
     pad_texts = ["Option missing"] * max(0, 4 - len(choices))
     opts = (choices[:4] + pad_texts)[:4]
+    k = _resolve_shot_count(prompt_mode)
+
+    fewshot_examples = [
+        {
+            "q": "Why is the man holding the microphone?",
+            "opts": ["He is singing", "He is painting", "He is sleeping", "He is cooking"],
+            "a": "A because he appears to be performing or singing on stage",
+        },
+        {
+            "q": "What are the people likely doing?",
+            "opts": ["Watching a movie", "Riding bicycles", "Swimming", "Sleeping"],
+            "a": "A because they are seated and facing a large screen",
+        },
+        {
+            "q": "Why is the woman wearing a helmet?",
+            "opts": ["She is biking", "She is reading", "She is cooking", "She is sleeping"],
+            "a": "A because she is on a bicycle outdoors",
+        },
+    ]
+
+    conversation: List[Dict] = []
+
+    for ex in fewshot_examples[:k]:
+        q_block = (
+            f"Question: {ex['q']}\n\n"
+            "Options:\n"
+            f"A) {ex['opts'][0]}\n"
+            f"B) {ex['opts'][1]}\n"
+            f"C) {ex['opts'][2]}\n"
+            f"D) {ex['opts'][3]}"
+        )
+        conversation.append({
+            "role": "user",
+            "content": [{"type": "text", "text": q_block}],
+        })
+        conversation.append({
+            "role": "assistant",
+            "content": [{"type": "text", "text": ex["a"]}],
+        })
 
     instructions = (
         "You are a visual commonsense reasoning assistant.\n"
@@ -261,7 +366,7 @@ def build_prompt_vcr(question: str, choices: List[str]):
         "<letter> because <explanation>\n"
         "where <letter> is one of: A, B, C, or D.\n"
         "Keep the explanation short (<= 20 words).\n"
-        "Do NOT repeat the question.\n"
+        "Do NOT repeat the question."
     )
 
     question_block = (
@@ -273,23 +378,23 @@ def build_prompt_vcr(question: str, choices: List[str]):
         f"D) {opts[3]}"
     )
 
-    full_text = instructions + "\n" + question_block
+    full_text = instructions + "\n\n" + question_block
 
-    return [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": full_text},
-                {"type": "image"},
-            ],
-        }
-    ]
+    conversation.append({
+        "role": "user",
+        "content": [
+            {"type": "text", "text": full_text},
+            {"type": "image"},
+        ],
+    })
+
+    return conversation
 
 PROMPT_BUILDERS = {
     "VQA-X":    build_prompt_vqax,
     "ACT-X":    build_prompt_actx,
     "ESNLI-VE": build_prompt_esnlive,
-    # VCR nutzt build_prompt_vcr(question, choices) direkt im Runner
+    # VCR uses build_prompt_vcr(question, choices, prompt_mode) directly
 }
 
 # -----------------------------
@@ -306,7 +411,6 @@ def _parse_vcr_letter_and_expl(text: str):
     t = re.sub(r'^(assistant:|response:|answer:)\s*', '', t, flags=re.I)
     t = t.replace("\n", " ").strip()
 
-    # Find a/b/c/d as first meaningful token
     tokens = t.split()
     letter = None
     if tokens:
@@ -314,7 +418,6 @@ def _parse_vcr_letter_and_expl(text: str):
         if cand in _LETTER_TO_IDX:
             letter = cand
 
-    # Extract explanation if 'because' present
     m = _BECAUSE_RE.search(t)
     if m:
         expl = t[m.end():].strip()
@@ -327,12 +430,55 @@ def _parse_vcr_letter_and_expl(text: str):
     return letter, expl
 
 # -----------------------------
-# Core generation
+# Helper: extract token-wise entropies
 # -----------------------------
-def generate_answer(model, processor, image_path: str, conversation, max_new_tokens: int = 20, device="cuda"):
+def _extract_token_entropies(out, tokenizer, input_len: int) -> Dict[str, float]:
+    """
+    Given a `generate` output with scores, compute per-step entropy
+    for the generated tokens (after the prompt).
+    Returns dict: "000:<token>" -> entropy_value, ...
+    """
+    token_entropy: Dict[str, float] = {}
+
+    if not hasattr(out, "scores") or out.scores is None or len(out.scores) == 0:
+        return token_entropy
+
+    sequences = out.sequences  # (batch, total_len)
+    gen_ids = sequences[0, input_len:]  # generated tokens only
+    scores = out.scores           # list length = #generated steps
+
+    # align generated tokens with scores (take min length just to be safe)
+    T = min(len(gen_ids), len(scores))
+
+    for t in range(T):
+        logits_step = scores[t][0]             # (vocab_size,)
+        probs = F.softmax(logits_step, dim=-1)
+        log_probs = torch.log(probs + 1e-12)
+        H = float(-torch.sum(probs * log_probs).item())
+
+        tok_id = gen_ids[t].item()
+        tok_str = tokenizer.decode([tok_id], skip_special_tokens=True)
+        key = f"{t:03d}:{tok_str}"
+        token_entropy[key] = H
+
+    return token_entropy
+
+# -----------------------------
+# Core generation (now returns text + token_entropy)
+# -----------------------------
+def generate_answer(
+    model,
+    processor,
+    image_path: str,
+    conversation,
+    max_new_tokens: int = 40,
+    device: str = "cuda",
+):
     """
     Unified generator for LLaVA and Qwen3-VL.
-    `conversation` is a list of chat turns as produced by your prompt builders.
+    Returns:
+      text: decoded generated string
+      token_entropy: dict { "000:<token>": entropy, ... }
     """
     img = Image.open(image_path).convert("RGB")
 
@@ -353,21 +499,25 @@ def generate_answer(model, processor, image_path: str, conversation, max_new_tok
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
                 temperature=None,
-                eos_token_id=processor.tokenizer.eos_token_id if hasattr(processor, "tokenizer") else None,
-                pad_token_id=processor.tokenizer.eos_token_id if hasattr(processor, "tokenizer") else None,
+                eos_token_id=getattr(processor, "eos_token_id", None)
+                if hasattr(processor, "eos_token_id") else None,
+                output_scores=True,
+                return_dict_in_generate=True,
             )
 
-        gen_only = []
-        if out.dim() == 2:
-            seqs = [out[0]]
-        else:
-            seqs = list(out)
-        for in_ids, out_ids in zip(inputs["input_ids"], seqs):
-            gen_only.append(out_ids[len(in_ids):])
-        text = processor.batch_decode(gen_only, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0].strip()
-        return text
+        sequences = out.sequences
+        input_len = inputs["input_ids"].shape[1]
+        gen_ids = sequences[0, input_len:]
+        text = processor.batch_decode(
+            [gen_ids], skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )[0].strip()
+
+        tokenizer = processor.tokenizer if hasattr(processor, "tokenizer") else processor
+        token_entropy = _extract_token_entropies(out, tokenizer, input_len)
+        return text, token_entropy
 
     else:
+        # LLaVA branch
         prompt = processor.apply_chat_template(conversation, add_generation_prompt=True)
         inputs = processor(images=img, text=prompt, return_tensors="pt").to(device, torch.float16)
         input_len = inputs["input_ids"].shape[1]
@@ -380,17 +530,35 @@ def generate_answer(model, processor, image_path: str, conversation, max_new_tok
                 temperature=None,
                 eos_token_id=processor.tokenizer.eos_token_id,
                 pad_token_id=processor.tokenizer.eos_token_id,
+                output_scores=True,
+                return_dict_in_generate=True,
             )
-        gen_only = out[0, input_len:]
-        text = processor.decode(gen_only, skip_special_tokens=True).strip()
-        return text
+
+        sequences = out.sequences
+        gen_ids = sequences[0, input_len:]
+        text = processor.decode(gen_ids, skip_special_tokens=True).strip()
+
+        tokenizer = processor.tokenizer
+        token_entropy = _extract_token_entropies(out, tokenizer, input_len)
+        return text, token_entropy
 
 # -----------------------------
 # Main unified runner
 # -----------------------------
-def run_vqa_task(task: str, model, processor, images_root: str, nle_root: str,
-                 split: str = "val", n_samples: Optional[int] = None):
-    """Unified entry point for VQA-X, ACT-X, ESNLI-VE, VCR."""
+def run_vqa_task(
+    task: str,
+    model,
+    processor,
+    images_root: str,
+    nle_root: str,
+    split: str = "val",
+    n_samples: Optional[int] = None,
+    prompt_mode: str = "zero",
+):
+    """
+    Unified entry point for VQA-X, ACT-X, ESNLI-VE, VCR (answer+explanation).
+    Adds 'token_entropy' dict to each result row.
+    """
     key = TASK_CANON.get(task.replace(" ", "").lower())
     if not key:
         raise ValueError(f"Unknown task: {task}")
@@ -408,15 +576,15 @@ def run_vqa_task(task: str, model, processor, images_root: str, nle_root: str,
     if n_samples:
         dataset = dataset[:n_samples]
 
-    print(f"Running {task} on {len(dataset)} samples...")
+    print(f"Running {task} on {len(dataset)} samples with prompt_mode='{prompt_mode}'...")
 
     results = []
     for i, s in enumerate(dataset, 1):
 
         if task == "VQA-X":
             gt = majority_vqa_answer(s.raw.get("answers"))
-            prompt = build_prompt_vqax(s.question)
-            raw_pred = generate_answer(model, processor, s.image_path, prompt)
+            prompt = build_prompt_vqax(s.question, prompt_mode=prompt_mode)
+            raw_pred, token_entropy = generate_answer(model, processor, s.image_path, prompt)
             pred_full = _postprocess_vqax(raw_pred)
             pred_only, _, _ = pred_full.partition(" because ")
             hit = int(normalize_ans(pred_only) == normalize_ans(gt)) if gt else None
@@ -424,8 +592,8 @@ def run_vqa_task(task: str, model, processor, images_root: str, nle_root: str,
 
         elif task == "ACT-X":
             gt = s.label
-            prompt = build_prompt_actx("")
-            raw_pred = generate_answer(model, processor, s.image_path, prompt)
+            prompt = build_prompt_actx("", prompt_mode=prompt_mode)
+            raw_pred, token_entropy = generate_answer(model, processor, s.image_path, prompt)
             pred_full = _postprocess_pred_because_expl(raw_pred)
             pred_only, _, _ = pred_full.partition(" because ")
             hit = int(normalize_ans(pred_only) == normalize_ans(gt)) if gt else None
@@ -433,8 +601,8 @@ def run_vqa_task(task: str, model, processor, images_root: str, nle_root: str,
 
         elif task == "ESNLI-VE":
             gt = s.label
-            prompt = build_prompt_esnlive(s.hypothesis)
-            raw_pred = generate_answer(model, processor, s.image_path, prompt)
+            prompt = build_prompt_esnlive(s.hypothesis, prompt_mode=prompt_mode)
+            raw_pred, token_entropy = generate_answer(model, processor, s.image_path, prompt)
             pred_full = raw_pred.strip()
 
             if "because" not in pred_full.lower():
@@ -450,12 +618,11 @@ def run_vqa_task(task: str, model, processor, images_root: str, nle_root: str,
             pred_to_store = pred_full
 
         elif task == "VCR":
-            # Multi-choice: s.choices = list of 4 strings; s.answer = correct choice text
             choices = s.choices or []
             gt = s.answer or ""
-            prompt = build_prompt_vcr(s.question or "", choices)
+            prompt = build_prompt_vcr(s.question or "", choices, prompt_mode=prompt_mode)
 
-            raw_pred = generate_answer(model, processor, s.image_path, prompt)
+            raw_pred, token_entropy = generate_answer(model, processor, s.image_path, prompt)
             letter, expl = _parse_vcr_letter_and_expl(raw_pred)
 
             if letter is not None:
@@ -468,7 +635,6 @@ def run_vqa_task(task: str, model, processor, images_root: str, nle_root: str,
             else:
                 pred_answer_text = "unknown"
 
-            # store in unified "<answer> because <explanation>" Format
             pred_full = f"{pred_answer_text.lower()} because {expl.lower()}"
             hit = int(normalize_ans(pred_answer_text) == normalize_ans(gt)) if gt else None
             pred_to_store = pred_full
@@ -485,13 +651,15 @@ def run_vqa_task(task: str, model, processor, images_root: str, nle_root: str,
             "ground_truth": gt,
             "image": s.image_path,
             "correct": hit,
+            "prompt_mode": prompt_mode,
+            "token_entropy": token_entropy,   # NEW: dict token -> entropy
         })
 
     valid_hits = [r["correct"] for r in results if r["correct"] is not None]
     if valid_hits:
         acc = sum(valid_hits) / len(valid_hits)
-        print(f"\n{task} {split} Accuracy: {acc:.3f}")
+        print(f"\n{task} {split} Accuracy ({prompt_mode}): {acc:.3f}")
     else:
-        print(f"\n{task} {split}: keine evaluierbaren Ground-Truths gefunden.")
+        print(f"\n{task} {split} ({prompt_mode}): keine evaluierbaren Ground-Truths gefunden.")
 
     return results
