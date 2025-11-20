@@ -8,6 +8,8 @@ import torch
 import torch.nn.functional as F
 import copy
 
+from utils.pixelshap_integration import run_pixelshap_for_token 
+
 from utils.load_data import (
     load_vqax, load_actx, load_esnlive, load_vcr
 )
@@ -429,11 +431,14 @@ def run_vqa_task(
     split: str = "val",
     n_samples: Optional[int] = None,
     prompt_mode: str = "zero",
+    pixel_shap=None,
+    pixelshap_out_dir: Optional[str] = None,
+    max_tokens_pixelshap: int = 3,
 ):
     """
     Unified entry point for VQA-X, ACT-X, ESNLI-VE, VCR (answer+explanation).
-    Nutzt ausschließlich prompting_templates.py für die Prompts.
-    Fügt pro Ergebnis ein 'token_entropy'-Dict (Explanation-Tokens) hinzu.
+    Uses prompting_templates.py for prompts.
+    Optionally computes PixelSHAP overlays for top-K explanation tokens.
     """
     key = TASK_CANON.get(task.replace(" ", "").lower())
     if not key:
@@ -457,6 +462,8 @@ def run_vqa_task(
     results = []
     for i, s in enumerate(dataset, 1):
 
+        pixelshap_paths = None  # will hold (token, overlay_path) tuples if used
+
         if task == "VQA-X":
             gt = majority_vqa_answer(s.raw.get("answers"))
             prompt = prompt_vqax_expl(s.question, prompt_mode)
@@ -470,6 +477,28 @@ def run_vqa_task(
             hit = int(normalize_ans(pred_only) == normalize_ans(gt)) if gt else None
             pred_to_store = pred_full
 
+            # Optional: PixelSHAP for top-K explanation tokens
+            if pixel_shap is not None and pixelshap_out_dir is not None and token_entropy:
+                sorted_tokens = sorted(
+                    token_entropy.items(),
+                    key=lambda kv: kv[1],
+                    reverse=True,
+                )
+                top_tokens = [t for t, H in sorted_tokens[:max_tokens_pixelshap]]
+
+                base_prompt_for_pixelshap = s.question
+
+                pixelshap_paths = []
+                for tok in top_tokens:
+                    out_path = run_pixelshap_for_token(
+                        pixel_shap=pixel_shap,
+                        image_path=s.image_path,
+                        base_prompt=base_prompt_for_pixelshap,
+                        token=tok,
+                        out_dir=pixelshap_out_dir,
+                    )
+                    pixelshap_paths.append((tok, out_path))
+
         elif task == "ACT-X":
             gt = s.label
             prompt = prompt_actx_expl(prompt_mode)
@@ -482,6 +511,27 @@ def run_vqa_task(
 
             hit = int(normalize_ans(pred_only) == normalize_ans(gt)) if gt else None
             pred_to_store = pred_full
+
+            if pixel_shap is not None and pixelshap_out_dir is not None and token_entropy:
+                sorted_tokens = sorted(
+                    token_entropy.items(),
+                    key=lambda kv: kv[1],
+                    reverse=True,
+                )
+                top_tokens = [t for t, H in sorted_tokens[:max_tokens_pixelshap]]
+
+                base_prompt_for_pixelshap = "Describe the human activity in this image."
+
+                pixelshap_paths = []
+                for tok in top_tokens:
+                    out_path = run_pixelshap_for_token(
+                        pixel_shap=pixel_shap,
+                        image_path=s.image_path,
+                        base_prompt=base_prompt_for_pixelshap,
+                        token=tok,
+                        out_dir=pixelshap_out_dir,
+                    )
+                    pixelshap_paths.append((tok, out_path))
 
         elif task == "ESNLI-VE":
             gt = s.label
@@ -503,6 +553,27 @@ def run_vqa_task(
 
             hit = int(normalize_ans(label) == normalize_ans(gt)) if gt else None
             pred_to_store = pred_full
+
+            if pixel_shap is not None and pixelshap_out_dir is not None and token_entropy:
+                sorted_tokens = sorted(
+                    token_entropy.items(),
+                    key=lambda kv: kv[1],
+                    reverse=True,
+                )
+                top_tokens = [t for t, H in sorted_tokens[:max_tokens_pixelshap]]
+
+                base_prompt_for_pixelshap = s.hypothesis
+
+                pixelshap_paths = []
+                for tok in top_tokens:
+                    out_path = run_pixelshap_for_token(
+                        pixel_shap=pixel_shap,
+                        image_path=s.image_path,
+                        base_prompt=base_prompt_for_pixelshap,
+                        token=tok,
+                        out_dir=pixelshap_out_dir,
+                    )
+                    pixelshap_paths.append((tok, out_path))
 
         elif task == "VCR":
             choices = s.choices or []
@@ -528,6 +599,27 @@ def run_vqa_task(
             hit = int(normalize_ans(pred_answer_text) == normalize_ans(gt)) if gt else None
             pred_to_store = pred_full
 
+            if pixel_shap is not None and pixelshap_out_dir is not None and token_entropy:
+                sorted_tokens = sorted(
+                    token_entropy.items(),
+                    key=lambda kv: kv[1],
+                    reverse=True,
+                )
+                top_tokens = [t for t, H in sorted_tokens[:max_tokens_pixelshap]]
+
+                base_prompt_for_pixelshap = s.question or ""
+
+                pixelshap_paths = []
+                for tok in top_tokens:
+                    out_path = run_pixelshap_for_token(
+                        pixel_shap=pixel_shap,
+                        image_path=s.image_path,
+                        base_prompt=base_prompt_for_pixelshap,
+                        token=tok,
+                        out_dir=pixelshap_out_dir,
+                    )
+                    pixelshap_paths.append((tok, out_path))
+
         else:
             raise ValueError(f"Unsupported task: {task}")
 
@@ -542,6 +634,7 @@ def run_vqa_task(
             "correct": hit,
             "prompt_mode": prompt_mode,
             "token_entropy": token_entropy,
+            "pixelshap_overlays": pixelshap_paths,
         })
 
     valid_hits = [r["correct"] for r in results if r["correct"] is not None]
@@ -549,6 +642,6 @@ def run_vqa_task(
         acc = sum(valid_hits) / len(valid_hits)
         print(f"\n{task} {split} Accuracy ({prompt_mode}): {acc:.3f}")
     else:
-        print(f"\n{task} {split} ({prompt_mode}): keine evaluierbaren Ground-Truths gefunden.")
+        print(f"\n{task} {split} ({prompt_mode}): no evaluable ground truths found.")
 
     return results
