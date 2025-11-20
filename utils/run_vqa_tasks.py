@@ -37,6 +37,40 @@ ANN_DIR_MAP = {
 # -----------------------------
 # Normalizers / helpers
 # -----------------------------
+
+# simple manual stopword set – passe nach Bedarf an
+MANUAL_STOPWORDS = {
+    "the", "a", "an", "of", "in", "on", "is", "are",
+    "to", "and", "or", "because", "that", "this", "it",
+    "they", "he", "she", "we", "you", "i", "them",
+    "his", "her", "their", "there", "here",
+}
+
+def _clean_token_for_entropy(t: str) -> Optional[str]:
+    """
+    Normalise a decoded token for entropy logging:
+
+    - strip whitespace
+    - lowercase
+    - drop if empty
+    - drop if in MANUAL_STOPWORDS
+
+    Wichtig: kein Regex-Strippen, damit auch Subwords (z.B. '▁skate')
+    erhalten bleiben.
+    """
+    if not t:
+        return None
+    t = t.strip()
+    if not t:
+        return None
+
+    t_low = t.lower()
+    if t_low in MANUAL_STOPWORDS:
+        return None
+
+    return t_low
+
+
 _ARTICLES = {"a", "an", "the"}
 
 def normalize_ans(s: str):
@@ -432,34 +466,47 @@ def _parse_vcr_letter_and_expl(text: str):
 # -----------------------------
 # Helper: extract token-wise entropies
 # -----------------------------
-def _extract_token_entropies(out, tokenizer, input_len: int) -> Dict[str, float]:
+def _extract_token_entropies(
+    out,
+    tokenizer,
+    input_len: int,
+) -> Dict[str, float]:
     """
-    Given a `generate` output with scores, compute per-step entropy
-    for the generated tokens (after the prompt).
-    Returns dict: "000:<token>" -> entropy_value, ...
+    Compute per-token entropy for all generated tokens (nach dem Prompt).
+    - Tokens werden mit _clean_token_for_entropy normalisiert
+    - Stopwords (MANUAL_STOPWORDS) werden entfernt
+    - Entropien auf 3 Nachkommastellen gerundet
+    - wenn derselbe Token mehrfach vorkommt -> maximale Entropie behalten
     """
     token_entropy: Dict[str, float] = {}
 
+    # Keine Scores -> keine Entropien
     if not hasattr(out, "scores") or out.scores is None or len(out.scores) == 0:
         return token_entropy
 
-    sequences = out.sequences  # (batch, total_len)
-    gen_ids = sequences[0, input_len:]  # generated tokens only
-    scores = out.scores           # list length = #generated steps
-
-    # align generated tokens with scores (take min length just to be safe)
+    sequences = out.sequences              # (batch, total_len)
+    gen_ids = sequences[0, input_len:]     # nur generierte Tokens
+    scores = out.scores                    # Liste von Logits pro Schritt
     T = min(len(gen_ids), len(scores))
 
     for t in range(T):
-        logits_step = scores[t][0]             # (vocab_size,)
+        logits_step = scores[t][0]         # (vocab_size,)
         probs = F.softmax(logits_step, dim=-1)
         log_probs = torch.log(probs + 1e-12)
-        H = float(-torch.sum(probs * log_probs).item())
+        H = float(-(probs * log_probs).sum().item())
+        H_round = round(H, 3)
 
         tok_id = gen_ids[t].item()
         tok_str = tokenizer.decode([tok_id], skip_special_tokens=True)
-        key = f"{t:03d}:{tok_str}"
-        token_entropy[key] = H
+
+        tok_clean = _clean_token_for_entropy(tok_str)
+        if tok_clean is None:
+            continue
+
+        if tok_clean in token_entropy:
+            token_entropy[tok_clean] = max(token_entropy[tok_clean], H_round)
+        else:
+            token_entropy[tok_clean] = H_round
 
     return token_entropy
 
@@ -477,11 +524,13 @@ def generate_answer(
     """
     Unified generator for LLaVA and Qwen3-VL.
     Returns:
-      text: decoded generated string
-      token_entropy: dict { "000:<token>": entropy, ... }
+        text (str), token_entropy (Dict[str, float])
     """
     img = Image.open(image_path).convert("RGB")
 
+    # --------------------------------------------------
+    # Qwen3-VL-Zweig
+    # --------------------------------------------------
     if _is_qwen_model(model):
         messages = _inject_image_into_messages(conversation, img)
         inputs = processor.apply_chat_template(
@@ -492,6 +541,7 @@ def generate_answer(
             return_tensors="pt",
         )
         inputs = inputs.to(model.device)
+        input_len = inputs["input_ids"].shape[1]
 
         with torch.inference_mode():
             out = model.generate(
@@ -505,19 +555,31 @@ def generate_answer(
                 return_dict_in_generate=True,
             )
 
-        sequences = out.sequences
-        input_len = inputs["input_ids"].shape[1]
-        gen_ids = sequences[0, input_len:]
+        # Nur generierten Teil dekodieren
+        gen_only = []
+        if out.sequences.dim() == 2:
+            seqs = [out.sequences[0]]
+        else:
+            seqs = list(out.sequences)
+        for in_ids, out_ids in zip(inputs["input_ids"], seqs):
+            gen_only.append(out_ids[len(in_ids):])
+
         text = processor.batch_decode(
-            [gen_ids], skip_special_tokens=True, clean_up_tokenization_spaces=False
+            gen_only, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )[0].strip()
 
-        tokenizer = processor.tokenizer if hasattr(processor, "tokenizer") else processor
-        token_entropy = _extract_token_entropies(out, tokenizer, input_len)
-        return text, token_entropy
+        token_entropy_all = _extract_token_entropies(
+            out,
+            tokenizer=processor.tokenizer,
+            input_len=input_len,
+        )
 
+        return text, token_entropy_all
+
+    # --------------------------------------------------
+    # LLaVA-Zweig
+    # --------------------------------------------------
     else:
-        # LLaVA branch
         prompt = processor.apply_chat_template(conversation, add_generation_prompt=True)
         inputs = processor(images=img, text=prompt, return_tensors="pt").to(device, torch.float16)
         input_len = inputs["input_ids"].shape[1]
@@ -533,14 +595,46 @@ def generate_answer(
                 output_scores=True,
                 return_dict_in_generate=True,
             )
+        gen_only = out.sequences[0, input_len:]
+        text = processor.decode(gen_only, skip_special_tokens=True).strip()
 
-        sequences = out.sequences
-        gen_ids = sequences[0, input_len:]
-        text = processor.decode(gen_ids, skip_special_tokens=True).strip()
+        token_entropy_all = _extract_token_entropies(
+            out,
+            tokenizer=processor.tokenizer,
+            input_len=input_len,
+        )
 
-        tokenizer = processor.tokenizer
-        token_entropy = _extract_token_entropies(out, tokenizer, input_len)
-        return text, token_entropy
+        return text, token_entropy_all
+
+
+def _filter_entropy_to_explanation(
+    token_entropy: Dict[str, float],
+    explanation: str,
+) -> Dict[str, float]:
+    """
+    Behalte nur Entropien für Tokens, die in der Explanation vorkommen
+    (nach dem gleichen Cleaning wie in _clean_token_for_entropy).
+    """
+    if not explanation:
+        return {}
+
+    # rohe Wörter aus der Explanation holen
+    words_raw = re.findall(r"[A-Za-z0-9]+", explanation)
+    keep: set[str] = set()
+
+    for w in words_raw:
+        cleaned = _clean_token_for_entropy(w)
+        if cleaned is not None:
+            keep.add(cleaned)
+
+    if not keep:
+        return {}
+
+    return {
+        tok: H for tok, H in token_entropy.items()
+        if tok in keep
+    }
+
 
 # -----------------------------
 # Main unified runner
@@ -557,7 +651,7 @@ def run_vqa_task(
 ):
     """
     Unified entry point for VQA-X, ACT-X, ESNLI-VE, VCR (answer+explanation).
-    Adds 'token_entropy' dict to each result row.
+    Adds 'token_entropy' dict (Explanation-only tokens) to each result row.
     """
     key = TASK_CANON.get(task.replace(" ", "").lower())
     if not key:
@@ -584,35 +678,47 @@ def run_vqa_task(
         if task == "VQA-X":
             gt = majority_vqa_answer(s.raw.get("answers"))
             prompt = build_prompt_vqax(s.question, prompt_mode=prompt_mode)
-            raw_pred, token_entropy = generate_answer(model, processor, s.image_path, prompt)
+            raw_pred, token_entropy_raw = generate_answer(model, processor, s.image_path, prompt)
+
             pred_full = _postprocess_vqax(raw_pred)
-            pred_only, _, _ = pred_full.partition(" because ")
+            pred_only, _, expl = pred_full.partition(" because ")
+
+            # nur Tokens, die in der Explanation vorkommen
+            token_entropy = _filter_entropy_to_explanation(token_entropy_raw, expl)
+
             hit = int(normalize_ans(pred_only) == normalize_ans(gt)) if gt else None
             pred_to_store = pred_full
 
         elif task == "ACT-X":
             gt = s.label
             prompt = build_prompt_actx("", prompt_mode=prompt_mode)
-            raw_pred, token_entropy = generate_answer(model, processor, s.image_path, prompt)
+            raw_pred, token_entropy_raw = generate_answer(model, processor, s.image_path, prompt)
+
             pred_full = _postprocess_pred_because_expl(raw_pred)
-            pred_only, _, _ = pred_full.partition(" because ")
+            pred_only, _, expl = pred_full.partition(" because ")
+
+            token_entropy = _filter_entropy_to_explanation(token_entropy_raw, expl)
+
             hit = int(normalize_ans(pred_only) == normalize_ans(gt)) if gt else None
             pred_to_store = pred_full
 
         elif task == "ESNLI-VE":
             gt = s.label
             prompt = build_prompt_esnlive(s.hypothesis, prompt_mode=prompt_mode)
-            raw_pred, token_entropy = generate_answer(model, processor, s.image_path, prompt)
-            pred_full = raw_pred.strip()
+            raw_pred, token_entropy_raw = generate_answer(model, processor, s.image_path, prompt)
 
+            pred_full = raw_pred.strip()
             if "because" not in pred_full.lower():
                 pred_full = pred_full.replace(",", " because ", 1)
+
             parts = re.split(r"\bbecause\b", pred_full, maxsplit=1, flags=re.I)
             label = parts[0].strip().lower()
             explanation = parts[1].strip().lower() if len(parts) > 1 else "explanation missing"
 
             label = _force_label_space(label)
             pred_full = f"{label} because {explanation}"
+
+            token_entropy = _filter_entropy_to_explanation(token_entropy_raw, explanation)
 
             hit = int(normalize_ans(label) == normalize_ans(gt)) if gt else None
             pred_to_store = pred_full
@@ -622,8 +728,10 @@ def run_vqa_task(
             gt = s.answer or ""
             prompt = build_prompt_vcr(s.question or "", choices, prompt_mode=prompt_mode)
 
-            raw_pred, token_entropy = generate_answer(model, processor, s.image_path, prompt)
+            raw_pred, token_entropy_raw = generate_answer(model, processor, s.image_path, prompt)
             letter, expl = _parse_vcr_letter_and_expl(raw_pred)
+
+            token_entropy = _filter_entropy_to_explanation(token_entropy_raw, expl)
 
             if letter is not None:
                 idx = _LETTER_TO_IDX.get(letter)
@@ -652,7 +760,7 @@ def run_vqa_task(
             "image": s.image_path,
             "correct": hit,
             "prompt_mode": prompt_mode,
-            "token_entropy": token_entropy,   # NEW: dict token -> entropy
+            "token_entropy": token_entropy,
         })
 
     valid_hits = [r["correct"] for r in results if r["correct"] is not None]
