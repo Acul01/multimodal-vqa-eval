@@ -2,7 +2,7 @@
 import os
 from dataclasses import dataclass
 from typing import Optional, List, Tuple, Any
-
+from utils.run_vqa_tasks import generate_answer  # local import to avoid circular deps
 
 @dataclass
 class VLMConfig:
@@ -18,16 +18,15 @@ class VLMWrapper:
     Minimal black-box wrapper: adapts your VLM (LLaVA / Qwen3-VL)
     to the interface expected by PixelSHAP.
     """
-
-    def __init__(self, cfg: VLMConfig):
-        self.cfg = cfg
+    def __init__(self, model, processor, device="cuda"):
+        self.model = model
+        self.processor = processor
+        self.device = device
 
     def __call__(self, image_path: str, prompt_text: str) -> str:
         """
         PixelSHAP calls this to get the model output.
         """
-        from utils.run_vqa_tasks import generate_answer  # local import to avoid circular deps
-
         conversation = [
             {
                 "role": "user",
