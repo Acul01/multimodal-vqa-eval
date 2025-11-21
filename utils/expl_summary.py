@@ -20,24 +20,13 @@ COLUMNS = [
 
 
 def _expl_table_path(results_root: str) -> str:
-    """
-    results_root ist der Ordner:
-      - results/with_explanation
-      (für without_explanation wollen wir ja KEINE Tabelle)
-    """
     return os.path.join(results_root, "explanation_stats.csv")
 
 
 def init_expl_table(results_root: str) -> str:
-    """
-    Initialisiert explanation_stats.csv, falls nicht vorhanden.
-    Gibt immer den Pfad zurück.
-    """
     path = _expl_table_path(results_root)
     if os.path.exists(path):
-        # Falls Struktur mal geändert wurde, hier migrieren
         df = pd.read_csv(path)
-        # fehlende Spalten hinzufügen
         for col in COLUMNS:
             if col not in df.columns:
                 df[col] = None
@@ -63,10 +52,7 @@ def append_expl_run(
     valid_expl_count: int,
     total_samples: int,
 ) -> str:
-    """
-    Hängt eine neue Zeile an explanation_stats.csv an.
-    Eine Zeile pro (model, task, split, prompt_mode)-Run.
-    """
+    
     path = _expl_table_path(results_root)
     if not os.path.exists(path):
         init_expl_table(results_root)
