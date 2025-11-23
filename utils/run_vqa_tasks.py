@@ -468,37 +468,83 @@ def run_vqa_task(
             gt = majority_vqa_answer(s.raw.get("answers"))
             prompt = prompt_vqax_expl(s.question, prompt_mode)
             raw_pred, token_entropy_raw = generate_answer(model, processor, s.image_path, prompt)
-
-            pred_full = _postprocess_vqax(raw_pred)
+        
+            pred_full = _postprocess_vqax(raw_pred)  # full answer: "<answer> because <explanation>"
             pred_only, _, expl = pred_full.partition(" because ")
-
+        
             token_entropy = _filter_entropy_to_explanation(token_entropy_raw, expl)
-
+        
             hit = int(normalize_ans(pred_only) == normalize_ans(gt)) if gt else None
             pred_to_store = pred_full
-
-            # Optional: PixelSHAP for top-K explanation tokens
+        
+            # --------------------------------------------------------
+            # PixelSHAP integration: per-image folder + meta.json
+            # --------------------------------------------------------
             if pixel_shap is not None and pixelshap_out_dir is not None and token_entropy:
+        
+                # sample index from the outer loop (for i, s in enumerate(..., 1))
+                sample_idx = i
+        
+                # select top-K tokens by entropy
                 sorted_tokens = sorted(
-                    token_entropy.items(),
-                    key=lambda kv: kv[1],
-                    reverse=True,
+                    token_entropy.items(), key=lambda kv: kv[1], reverse=True
                 )
                 top_tokens = [t for t, H in sorted_tokens[:max_tokens_pixelshap]]
-
+        
+                # we use only the question as base prompt for PixelSHAP
                 base_prompt_for_pixelshap = s.question
-
+        
+                img_base = os.path.splitext(os.path.basename(s.image_path))[0]
+                img_id = getattr(s, "image_id", None)
+        
+                # ensure unique directory per sample by including sample_idx
+                if img_id is not None:
+                    img_dir_name = f"sample{sample_idx}_id{img_id}_{img_base}"
+                else:
+                    img_dir_name = f"sample{sample_idx}_{img_base}"
+        
+                img_out_dir = os.path.join(pixelshap_out_dir, img_dir_name)
+                os.makedirs(img_out_dir, exist_ok=True)
+        
+                # meta.json with full answer + sample index
+                meta_path = os.path.join(img_out_dir, "meta.json")
+                if not os.path.exists(meta_path):
+                    meta = {
+                        "sample_index": sample_idx,
+                        "image_path": s.image_path,
+                        "image_id": img_id,
+                        "question": s.question,
+                        "model_answer": pred_full,          # full "<answer> because <expl>"
+                        "ground_truth_answer": gt,
+                    }
+                    try:
+                        import json
+                        with open(meta_path, "w", encoding="utf-8") as f:
+                            json.dump(meta, f, indent=2, ensure_ascii=False)
+                    except Exception as e:
+                        print(f"[WARN] Could not write meta.json: {e}")
+        
                 pixelshap_paths = []
                 for tok in top_tokens:
-                    out_path = run_pixelshap_for_token(
-                        pixel_shap=pixel_shap,
-                        image_path=s.image_path,
-                        base_prompt=base_prompt_for_pixelshap,
-                        token=tok,
-                        out_dir=pixelshap_out_dir,
-                    )
-                    pixelshap_paths.append((tok, out_path))
-
+                    try:
+                        out_path = run_pixelshap_for_token(
+                            pixel_shap=pixel_shap,
+                            image_path=s.image_path,
+                            base_prompt=base_prompt_for_pixelshap,
+                            token=tok,
+                            out_dir=img_out_dir,            # per-sample directory
+                            image_id=img_id,
+                            question=s.question,
+                            model_answer=pred_full,         # full answer
+                            gt_answer=gt,
+                        )
+                        pixelshap_paths.append((tok, out_path))
+                    except Exception as e:
+                        print(
+                            f"[WARN] PixelSHAP failed for sample {sample_idx}, "
+                            f"image {s.image_path}, token '{tok}': {e}"
+                        )
+                
         elif task == "ACT-X":
             gt = s.label
             prompt = prompt_actx_expl(prompt_mode)
