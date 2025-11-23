@@ -79,17 +79,6 @@ def _clean_token_for_entropy(t: str) -> Optional[str]:
     return t_low
 
 
-_ARTICLES = {"a", "an", "the"}
-
-def normalize_ans(s: str) -> str:
-    """Lowercase, Strip, Punctuation raus, Artikel entfernen."""
-    s = (s or "").lower().strip()
-    s = re.sub(r"[^a-z0-9\s]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    toks = [t for t in s.split() if t not in _ARTICLES]
-    return " ".join(toks)
-
-
 def majority_vqa_answer(raw_answers):
     """Mehrheitsantwort aus den 10 VQA-Answers."""
     import collections
@@ -105,37 +94,6 @@ def majority_vqa_answer(raw_answers):
         return None
     cnt = collections.Counter([normalize_ans(t) for t in texts])
     return cnt.most_common(1)[0][0]
-
-
-def _postprocess_pred_because_expl(text: str) -> str:
-    """
-    Normalisiere Modell-Output in das Format:
-    '<prediction> because <explanation>' (lowercase).
-    """
-    t = (text or "").strip()
-    # Prefixe wie "assistant:", "answer:" etc. entfernen
-    t = re.sub(r'^(?:assistant:|response:|answer:|question:)\s*', "", t, flags=re.I)
-    t = t.replace("\n", " ").strip()
-
-    if "because" not in t.lower():
-        toks = t.split()
-        if toks and toks[0].lower() in ["entailment", "contradiction", "neutral"]:
-            return f"{toks[0].lower()} because explanation missing"
-        elif toks:
-            return f"{toks[0].lower()} because explanation missing"
-        else:
-            return "unknown because explanation missing"
-
-    parts = re.split(r"\bbecause\b", t, maxsplit=1, flags=re.I)
-    label = parts[0].strip().lower() if len(parts) >= 1 else "unknown"
-    explanation = parts[1].strip().rstrip(".").lower() if len(parts) >= 2 else "explanation missing"
-
-    if not label:
-        label = "unknown"
-    if not explanation:
-        explanation = "explanation missing"
-
-    return f"{label} because {explanation}"
 
 
 def _force_label_space(label: str) -> str:
@@ -174,7 +132,42 @@ def _inject_image_into_messages(messages, pil_image: Image.Image):
     return msgs
 
 
-# ---- VQA-X specific postprocessor ----
+import re
+
+# ----------------------------------------------------------
+# Gemeinsame Normalisierung, wie von dir spezifiziert
+# ----------------------------------------------------------
+def _normalize_generated_text(text: str) -> str:
+    """
+    - lowercase
+    - alle Nicht-Alphanumerika entfernen (außer Leerzeichen)
+    - mehrfachspaces normalisieren
+    - Wörter 'answer', 'question', 'explanation' entfernen
+    """
+    t = (text or "").strip()
+
+    # Prefixe wie assistant:, response:, answer:, question: entfernen
+    t = re.sub(r'^(?:assistant:|response:|answer:|question:)\s*', "", t, flags=re.I)
+
+    # lowercase
+    t = t.lower()
+
+    # alles außer buchstaben + zahlen + space entfernen
+    t = re.sub(r"[^a-z0-9\s]+", " ", t)
+
+    # mehrfachspaces reduzieren
+    t = re.sub(r"\s+", " ", t).strip()
+
+    # störwörter entfernen
+    remove_words = {"answer", "question", "explanation"}
+    toks = [w for w in t.split() if w not in remove_words]
+
+    return " ".join(toks).strip()
+
+
+# ----------------------------------------------------------
+# BECAUSE-Splitter bleibt wie gefordert erhalten
+# ----------------------------------------------------------
 _BECAUSE_RE = re.compile(r"\bbecause\b", flags=re.I)
 
 def _split_on_because(text: str):
@@ -184,30 +177,72 @@ def _split_on_because(text: str):
     return (text[:m.start()].strip(), text[m.end():].strip())
 
 
+# ----------------------------------------------------------
+# GENERISCHE Logik für: answer + explanation
+# (wird von beiden Postprocessing-Funktionen verwendet)
+# ----------------------------------------------------------
+def _generic_postprocess_because(text: str) -> str:
+    """
+    Deine gewünschte Logik:
+
+    1. normalisieren
+    2. wenn 'because' vorkommt → linker Teil = answer, rechter Teil = explanation
+    3. sonst → erstes Wort = answer, Rest = explanation
+    4. Rückgabe: "<answer> because <explanation>"
+    """
+
+    t = _normalize_generated_text(text)
+
+    if not t:
+        return "unknown because explanation missing"
+
+    # Fall: because kommt vor
+    if " because " in f" {t} ":
+        left, right = t.split("because", 1)
+        answer_raw = left.strip()
+        expl_raw = right.strip()
+    else:
+        # kein because → erstes Wort Antwort
+        toks = t.split()
+        if not toks:
+            return "unknown because explanation missing"
+
+        answer_raw = toks[0]
+        expl_raw = " ".join(toks[1:]).strip()
+
+    answer = answer_raw if answer_raw else "unknown"
+    explanation = expl_raw if expl_raw else "explanation missing"
+
+    return f"{answer} because {explanation}"
+
+
+# ----------------------------------------------------------
+# Deine originalen Funktionsnamen mit neuer Logik
+# ----------------------------------------------------------
+def _postprocess_pred_because_expl(text: str) -> str:
+    """
+    Gleiche Aufgabe wie vorher, aber nun vollständig nach deinem Schema.
+    """
+    return _generic_postprocess_because(text)
+
+
 def _postprocess_vqax(text: str) -> str:
     """
-    Normalize VQA-X to '<prediction> because <explanation>' (lowercase).
-    - prediction: 1–2 words
-    - wenn 'because' fehlt: prediction aus den ersten Tokens ableiten
+    Gleiches Verhalten wie oben – VQA-X nutzt dieselbe Logik.
     """
-    t = (text or "").strip()
-    t = re.sub(r'^(?:assistant:|response:|answer:|question:)\s*', "", t, flags=re.I)
-    t = t.replace("\n", " ").strip()
+    return _generic_postprocess_because(text)
 
-    print(f"[DBG] generated_text: {t}")
 
-    left, right = _split_on_because(t)
+# normalize_ans bleibt unverändert
+_ARTICLES = {"a", "an", "the"}
 
-    if right == "":
-        words = left.split()
-        pred = " ".join(words[:2]).lower() if words else "unknown"
-        expl = " ".join(words[2:]).lower() if len(words) > 2 else "no further details"
-        return f"{pred} because {expl}"
-
-    pred = re.sub(r"[^a-zA-Z0-9 ]+", " ", left).strip()
-    pred = " ".join(pred.split()[:2]).lower() or "unknown"
-    expl = right.strip().rstrip(".").lower() or "no further details"
-    return f"{pred} because {expl}"
+def normalize_ans(s: str) -> str:
+    """Lowercase, Strip, Punctuation raus, Artikel entfernen."""
+    s = (s or "").lower().strip()
+    s = re.sub(r"[^a-z0-9\s]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    toks = [t for t in s.split() if t not in _ARTICLES]
+    return " ".join(toks)
 
 
 # -----------------------------
