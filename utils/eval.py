@@ -12,6 +12,7 @@ from utils.load_data import load_vqax, load_actx, load_esnlive, load_vcr
 
 from sentence_transformers import SentenceTransformer, util
 
+
 try:
     SEM_MODEL = SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
 except Exception:
@@ -19,6 +20,7 @@ except Exception:
     print("Warning: Could not load semantic similarity model!")
 
 _ARTICLES = {"a", "an", "the"}
+
 
 def semantic_similarity(a: str, b: str) -> float:
     if SEM_MODEL is None:
@@ -41,30 +43,49 @@ def _normalize_answer(s: Optional[str]) -> str:
     return " ".join(toks)
 
 
+def _normalize_generated_text_eval(text: str) -> str:
+    t = (text or "").strip()
+
+    # mögliche Präfixe entfernen
+    t = re.sub(r'^(?:assistant:|response:|answer:|question:)\s*', "", t, flags=re.I)
+
+    # lowercase
+    t = t.lower()
+
+    # nur alphanumerisch + Leerzeichen
+    t = re.sub(r"[^a-z0-9\s]+", " ", t)
+
+    # Leerzeichen normalisieren
+    t = re.sub(r"\s+", " ", t).strip()
+
+    # störende Wörter entfernen
+    remove_words = {"answer", "question", "explanation"}
+    toks = [w for w in t.split() if w not in remove_words]
+
+    return " ".join(toks).strip()
+
+
 def _split_pred_expl(text: str) -> Tuple[str, str]:
-    """
-    Expect format "<prediction> because <explanation>".
-    Fallback: enforce this format heuristically.
-    """
     if not isinstance(text, str):
         return "", ""
-    t = text.strip()
-    if " because " in t:
-        pred, expl = t.split(" because ", 1)
+
+    t = _normalize_generated_text_eval(text)
+    if not t:
+        return "", ""
+
+    # because-basiertes Splitten
+    if " because " in f" {t} ":
+        pred_part, expl_part = t.split("because", 1)
+        pred = pred_part.strip()
+        expl = expl_part.strip()
     else:
-        # Fallback: take first 1–2 tokens as prediction
         words = t.split()
-        if len(words) >= 2:
-            pred = " ".join(words[:2])
-            expl = " ".join(words[2:]) or ""
-        elif words:
-            pred, expl = words[0], ""
-        else:
-            pred, expl = "", ""
-    # Limit prediction to 1–2 tokens, strip punctuation
-    pred = re.sub(r"[^a-zA-Z0-9 ]+", " ", pred).strip()
-    pred = " ".join(pred.split()[:2])
-    return pred, expl.strip()
+        if not words:
+            return "", ""
+        pred = words[0]
+        expl = " ".join(words[1:]).strip()
+
+    return pred, expl
 
 
 # ============================================================
