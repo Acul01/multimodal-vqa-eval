@@ -22,6 +22,41 @@ except Exception:
 _ARTICLES = {"a", "an", "the"}
 
 
+def _save_dataframe(df: pd.DataFrame, csv_path: str) -> str:
+    """
+    Save DataFrame to both CSV and Excel formats.
+    
+    Args:
+        df: DataFrame to save
+        csv_path: Path for CSV file (Excel will be saved with .xlsx extension)
+        
+    Returns:
+        Path to CSV file (for backward compatibility)
+    """
+    # Save CSV
+    df.to_csv(csv_path, index=False)
+    
+    # Save Excel (same location, .xlsx extension)
+    excel_path = csv_path.rsplit(".csv", 1)[0] + ".xlsx"
+    try:
+        df.to_excel(excel_path, index=False, engine="openpyxl")
+    except ImportError:
+        import warnings
+        warnings.warn(
+            "openpyxl is not installed. Excel export skipped. "
+            "Install with: pip install openpyxl",
+            UserWarning,
+        )
+    except Exception as e:
+        import warnings
+        warnings.warn(
+            f"Failed to save Excel file: {e}. CSV file saved successfully.",
+            UserWarning,
+        )
+    
+    return csv_path
+
+
 def semantic_similarity(a: str, b: str) -> float:
     if SEM_MODEL is None:
         return 0.0
@@ -163,7 +198,7 @@ def evaluate_vqax_to_csv(
     if save_name is None:
         save_name = f"vqax_{split}_eval.csv"
     out_path = os.path.join(save_dir, save_name)
-    df.to_csv(out_path, index=False)
+    _save_dataframe(df, out_path)
     return out_path
 
 
@@ -235,7 +270,7 @@ def evaluate_actx_to_csv(
     if save_name is None:
         save_name = f"actx_{split}_eval.csv"
     out_path = os.path.join(save_dir, save_name)
-    df.to_csv(out_path, index=False)
+    _save_dataframe(df, out_path)
     return out_path
 
 
@@ -337,7 +372,7 @@ def evaluate_esnlive_to_csv(
     if save_name is None:
         save_name = f"esnlive_{split}_eval.csv"
     out_path = os.path.join(save_dir, save_name)
-    df.to_csv(out_path, index=False)
+    _save_dataframe(df, out_path)
     return out_path
 
 
@@ -441,7 +476,7 @@ def evaluate_vcr_to_csv(
     if save_name is None:
         save_name = f"vcr_{split}_eval.csv"
     out_path = os.path.join(save_dir, save_name)
-    df.to_csv(out_path, index=False)
+    _save_dataframe(df, out_path)
     return out_path
 
 
@@ -482,7 +517,7 @@ def evaluate_vqax_answers_only_to_csv(
     if save_name is None:
         save_name = f"vqax_{split}_answers_only.csv"
     out_path = os.path.join(save_dir, save_name)
-    df.to_csv(out_path, index=False)
+    _save_dataframe(df, out_path)
     return out_path
 
 
@@ -568,7 +603,7 @@ def evaluate_actx_answers_only_to_csv(
     if save_name is None:
         save_name = f"actx_{split}_answers.csv"
     out_path = os.path.join(save_dir, save_name)
-    df.to_csv(out_path, index=False)
+    _save_dataframe(df, out_path)
 
     print(f"Saved ACT-X CSV with semantic similarity → {out_path}")
     print(f"Mean semantic similarity: {df['semantic_similarity'].mean():.3f}")
@@ -607,7 +642,7 @@ def evaluate_esnlive_answers_only_to_csv(
     if save_name is None:
         save_name = f"esnlive_{split}_answers.csv"
     out_path = os.path.join(save_dir, save_name)
-    df.to_csv(out_path, index=False)
+    _save_dataframe(df, out_path)
     return out_path
 
 
@@ -664,5 +699,5 @@ def evaluate_vcr_answers_only_to_csv(
     if save_name is None:
         save_name = f"vcr_answers_only_{split}.csv"
     out_path = os.path.join(save_dir, save_name)
-    df.to_csv(out_path, index=False)
+    _save_dataframe(df, out_path)
     return out_path
