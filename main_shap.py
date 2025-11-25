@@ -29,10 +29,10 @@ def main():
         low_cpu_mem_usage=True,
     ).to(device)
 
-    # ----- Build segmentation model + manipulator -----
-    segmentation_model = build_segmentation_model(device=device)
-    manipulator = build_manipulator(segmentation_model=segmentation_model, device=device)
-
+    # ----- Note: Segmentation model is now created per-image in run_pixelshap_for_image -----
+    # ----- based on the generated answer tokens. The initial pixel_shap object is -----
+    # ----- kept for compatibility but a new one is created per image. -----
+    
     # ----- Wrap VLM for PixelSHAP -----
     vlm_cfg = VLMConfig(
         model=model,
@@ -42,9 +42,16 @@ def main():
         task="VQA-X",
     )
 
+    # Create a dummy pixel_shap object for compatibility (not used, but kept for API)
+    # The actual pixel_shap is created per-image in run_pixelshap_for_image
+    dummy_segmentation_model = build_segmentation_model(
+        answer_tokens=["person", "man", "woman"],  # dummy tokens
+        device=device
+    )
+    manipulator = build_manipulator(device=device)
     pixel_shap = build_pixelshap(
         vlm_cfg=vlm_cfg,
-        segmentation_model=segmentation_model,
+        segmentation_model=dummy_segmentation_model,
         manipulator=manipulator,
         vectorizer=None,  # as recommended for VLM-style models
         temp_dir=os.path.join(project_root, "pixelshap_tmp"),

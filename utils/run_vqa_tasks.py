@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 import copy
 
-from utils.pixelshap_integration import run_pixelshap_for_token, run_pixelshap_for_image 
+from utils.pixelshap_integration import run_pixelshap_for_token, run_pixelshap_for_image, VLMConfig 
 
 from utils.load_data import (
     load_vqax, load_actx, load_esnlive, load_vcr
@@ -538,8 +538,28 @@ def run_vqa_task(
                     # Use the token with highest entropy for the overlay
                     most_important_token = selected_tokens[0]
                     try:
+                        # Extract all answer tokens for segmentation model
+                        answer_tokens = list(token_entropy.keys())
+                        
+                        # Determine device from model
+                        device = next(model.parameters()).device
+                        device_str = "cuda" if device.type == "cuda" else "cpu"
+                        
+                        # Create VLMConfig for PixelSHAP
+                        vlm_cfg = VLMConfig(
+                            model=model,
+                            processor=processor,
+                            device=device_str,
+                            max_new_tokens=40,
+                            task=task,
+                        )
+                        
+                        # Get temp_dir from pixel_shap if available, otherwise use default
+                        temp_dir = getattr(pixel_shap, 'temp_dir', 'pixelshap_tmp') if pixel_shap else 'pixelshap_tmp'
+                        
                         out_path = run_pixelshap_for_image(
-                            pixel_shap=pixel_shap,
+                            vlm_cfg=vlm_cfg,
+                            answer_tokens=answer_tokens,
                             image_path=s.image_path,
                             base_prompt=base_prompt_for_pixelshap,
                             token=most_important_token,
@@ -548,6 +568,7 @@ def run_vqa_task(
                             question=s.question,
                             model_answer=pred_full,
                             gt_answer=gt,
+                            temp_dir=temp_dir,
                         )
                         pixelshap_paths.append((most_important_token, out_path))
                     except Exception as e:

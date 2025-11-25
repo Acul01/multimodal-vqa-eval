@@ -10,16 +10,27 @@ from token_shap.image_utils import (
 )
 
 
-def build_segmentation_model(device: str = "cuda"):
+def build_segmentation_model(answer_tokens: list, device: str = "cuda"):
     """
     Build and return the segmentation model used by PixelSHAP.
     This follows the PixelSHAP example: DinoSam2SegmentationModel
     wraps GroundingDINO + SAM2.
 
-    The 'text_prompt' controls which objects/concepts are detected.
-    You can adjust it later to better fit your datasets.
+    The 'text_prompt' is created from the answer tokens, which are
+    joined by commas to form a search query for object/concept detection.
+
+    Args:
+        answer_tokens: List of tokens from the generated answer/explanation
+        device: Device to run the model on (default: "cuda")
+    
+    Returns:
+        DinoSam2SegmentationModel instance
     """
-    text_prompt = "person, man, woman, child, dog, cat, car, bus, bike"
+    # Convert tokens to comma-separated string
+    # Filter out empty tokens and join with commas
+    filtered_tokens = [str(t).strip() for t in answer_tokens if t and str(t).strip()]
+    
+    text_prompt = ", ".join(filtered_tokens)
 
     segmentation_model = DinoSam2SegmentationModel(
         text_prompt=text_prompt,
