@@ -55,11 +55,10 @@ def main():
     pixelshap_out_dir = os.path.join(
         project_root,
         "results",
-        "pixelshap_overlays",
-        "vqax_llava_zero",
+        "llava_vqax_3shot",
     )
 
-    # ----- Run a small VQA-X SHAP experiment -----
+    # ----- Run VQA-X SHAP experiment -----
     results = run_vqa_task(
         task="VQA-X",
         model=model,
@@ -67,11 +66,11 @@ def main():
         images_root=images_root,
         nle_root=nle_root,
         split="val",
-        n_samples=3,           # small for debugging
-        prompt_mode="zero",
+        n_samples=5,
+        prompt_mode="3shot",
         pixel_shap=pixel_shap,
         pixelshap_out_dir=pixelshap_out_dir,
-        max_tokens_pixelshap=2,
+        max_tokens_pixelshap=None,  # None means use all tokens
     )
 
     print(f"Finished SHAP run with {len(results)} samples.")
