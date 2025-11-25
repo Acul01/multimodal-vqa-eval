@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 import copy
 
-from utils.pixelshap_integration import run_pixelshap_for_token 
+from utils.pixelshap_integration import run_pixelshap_for_token, run_pixelshap_for_image 
 
 from utils.load_data import (
     load_vqax, load_actx, load_esnlive, load_vcr
@@ -433,12 +433,13 @@ def run_vqa_task(
     prompt_mode: str = "zero",
     pixel_shap=None,
     pixelshap_out_dir: Optional[str] = None,
-    max_tokens_pixelshap: int = 3,
+    max_tokens_pixelshap: Optional[int] = 3,
 ):
     """
     Unified entry point for VQA-X, ACT-X, ESNLI-VE, VCR (answer+explanation).
     Uses prompting_templates.py for prompts.
-    Optionally computes PixelSHAP overlays for top-K explanation tokens.
+    Optionally computes PixelSHAP overlays for explanation tokens.
+    If max_tokens_pixelshap is None, uses all tokens from the explanation.
     """
     key = TASK_CANON.get(task.replace(" ", "").lower())
     if not key:
@@ -485,11 +486,16 @@ def run_vqa_task(
                 # sample index from the outer loop (for i, s in enumerate(..., 1))
                 sample_idx = i
         
-                # select top-K tokens by entropy
+                # select tokens: all tokens if max_tokens_pixelshap is None, otherwise top-K
                 sorted_tokens = sorted(
                     token_entropy.items(), key=lambda kv: kv[1], reverse=True
                 )
-                top_tokens = [t for t, H in sorted_tokens[:max_tokens_pixelshap]]
+                if max_tokens_pixelshap is None:
+                    # Use all tokens from the explanation
+                    selected_tokens = [t for t, H in sorted_tokens]
+                else:
+                    # Use top-K tokens
+                    selected_tokens = [t for t, H in sorted_tokens[:max_tokens_pixelshap]]
         
                 # we use only the question as base prompt for PixelSHAP
                 base_prompt_for_pixelshap = s.question
@@ -497,52 +503,57 @@ def run_vqa_task(
                 img_base = os.path.splitext(os.path.basename(s.image_path))[0]
                 img_id = getattr(s, "image_id", None)
         
-                # ensure unique directory per sample by including sample_idx
+                # create per-image directory
                 if img_id is not None:
-                    img_dir_name = f"sample{sample_idx}_id{img_id}_{img_base}"
+                    img_dir_name = f"{img_base}_id{img_id}"
                 else:
-                    img_dir_name = f"sample{sample_idx}_{img_base}"
+                    img_dir_name = img_base
         
                 img_out_dir = os.path.join(pixelshap_out_dir, img_dir_name)
                 os.makedirs(img_out_dir, exist_ok=True)
         
-                # meta.json with full answer + sample index
+                # meta.json with full answer + all tokens
                 meta_path = os.path.join(img_out_dir, "meta.json")
-                if not os.path.exists(meta_path):
-                    meta = {
-                        "sample_index": sample_idx,
-                        "image_path": s.image_path,
-                        "image_id": img_id,
-                        "question": s.question,
-                        "model_answer": pred_full,          # full "<answer> because <expl>"
-                        "ground_truth_answer": gt,
-                    }
-                    try:
-                        import json
-                        with open(meta_path, "w", encoding="utf-8") as f:
-                            json.dump(meta, f, indent=2, ensure_ascii=False)
-                    except Exception as e:
-                        print(f"[WARN] Could not write meta.json: {e}")
+                meta = {
+                    "sample_index": sample_idx,
+                    "image_path": s.image_path,
+                    "image_id": img_id,
+                    "question": s.question,
+                    "model_answer": pred_full,          # full "<answer> because <expl>"
+                    "ground_truth_answer": gt,
+                    "explanation_tokens": list(token_entropy.keys()),  # all tokens
+                    "token_entropy": token_entropy,  # all tokens with entropy values
+                }
+                try:
+                    import json
+                    with open(meta_path, "w", encoding="utf-8") as f:
+                        json.dump(meta, f, indent=2, ensure_ascii=False)
+                except Exception as e:
+                    print(f"[WARN] Could not write meta.json: {e}")
         
+                # Create one overlay per image using the most important token (highest entropy)
+                # This represents the overall explanation for the image
                 pixelshap_paths = []
-                for tok in top_tokens:
+                if selected_tokens:
+                    # Use the token with highest entropy for the overlay
+                    most_important_token = selected_tokens[0]
                     try:
-                        out_path = run_pixelshap_for_token(
+                        out_path = run_pixelshap_for_image(
                             pixel_shap=pixel_shap,
                             image_path=s.image_path,
                             base_prompt=base_prompt_for_pixelshap,
-                            token=tok,
-                            out_dir=img_out_dir,            # per-sample directory
+                            token=most_important_token,
+                            out_dir=img_out_dir,
                             image_id=img_id,
                             question=s.question,
-                            model_answer=pred_full,         # full answer
+                            model_answer=pred_full,
                             gt_answer=gt,
                         )
-                        pixelshap_paths.append((tok, out_path))
+                        pixelshap_paths.append((most_important_token, out_path))
                     except Exception as e:
                         print(
                             f"[WARN] PixelSHAP failed for sample {sample_idx}, "
-                            f"image {s.image_path}, token '{tok}': {e}"
+                            f"image {s.image_path}, token '{most_important_token}': {e}"
                         )
                 
         elif task == "ACT-X":

@@ -316,3 +316,76 @@ def run_pixelshap_for_token(
     )
 
     return out_path
+
+
+def run_pixelshap_for_image(
+    pixel_shap,
+    image_path: str,
+    base_prompt: str,
+    token: str,
+    out_dir: str,
+    sampling_ratio: float = 0.5,
+    max_combinations: int = 20,
+    image_id: Optional[Any] = None,
+    question: Optional[str] = None,
+    model_answer: Optional[str] = None,
+    gt_answer: Optional[str] = None,
+) -> str:
+    """
+    Run PixelSHAP for an image and save an overlay image.
+    Similar to run_pixelshap_for_token, but uses a generic filename (overlay.png)
+    instead of token-specific naming.
+
+    The overlay is stored in the provided directory along with meta.json.
+
+    Returns:
+        Path to the saved overlay image.
+    """
+    # base output dir for all images (already created by caller)
+    os.makedirs(out_dir, exist_ok=True)
+
+    # write / update metadata file once per image
+    meta_path = os.path.join(out_dir, "meta.json")
+    if not os.path.exists(meta_path):
+        meta = {
+            "image_path": image_path,
+            "image_id": image_id,
+            "question": question,
+            "model_answer": model_answer,
+            "ground_truth_answer": gt_answer,
+        }
+        try:
+            import json
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"[WARN] Could not write meta.json for {out_dir}: {e}")
+
+    # build prompt for this specific token
+    prompt = (
+        base_prompt
+        + f"\n\nExplain the image and especially the concept '{token}'."
+    )
+
+    # run PixelSHAP
+    results_df, shapley_values = pixel_shap.analyze(
+        image_path=image_path,
+        prompt=prompt,
+        sampling_ratio=sampling_ratio,
+        max_combinations=max_combinations,
+        cleanup_temp_files=True,
+    )
+
+    # output path for the overlay image (generic name: overlay.png)
+    out_path = os.path.join(out_dir, "overlay.png")
+
+    # visualize overlay
+    pixel_shap.visualize(
+        background_opacity=0.5,
+        show_original_side_by_side=True,
+        show_labels=False,
+        show_model_output=True,
+        output_path=out_path,
+    )
+
+    return out_path
