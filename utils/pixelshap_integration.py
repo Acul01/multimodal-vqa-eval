@@ -320,7 +320,7 @@ def run_pixelshap_for_token(
 
 def run_pixelshap_for_image(
     vlm_cfg: VLMConfig,
-    answer_tokens: list,
+    generated_answer: str,
     image_path: str,
     base_prompt: str,
     token: str,
@@ -337,7 +337,7 @@ def run_pixelshap_for_image(
 ) -> str:
     """
     Run PixelSHAP for an image and save an overlay image.
-    Creates a new segmentation model for each image based on the answer tokens.
+    Creates a new segmentation model for each image based on the complete generated answer.
     Similar to run_pixelshap_for_token, but uses a generic filename (overlay.png)
     instead of token-specific naming.
 
@@ -345,7 +345,7 @@ def run_pixelshap_for_image(
 
     Args:
         vlm_cfg: VLMConfig containing model, processor, device, etc.
-        answer_tokens: List of tokens from the generated answer/explanation
+        generated_answer: Complete generated answer string (e.g., "<answer> because <explanation>")
         image_path: Path to the image
         base_prompt: Base prompt for the VLM
         token: Specific token to focus on in the explanation
@@ -385,9 +385,9 @@ def run_pixelshap_for_image(
         except Exception as e:
             print(f"[WARN] Could not write meta.json for {out_dir}: {e}")
 
-    # Build segmentation model with answer tokens
+    # Build segmentation model with complete generated answer
     segmentation_model = build_segmentation_model(
-        answer_tokens=answer_tokens,
+        generated_answer=generated_answer,
         device=vlm_cfg.device,
     )
     

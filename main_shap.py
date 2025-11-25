@@ -45,7 +45,7 @@ def main():
     # Create a dummy pixel_shap object for compatibility (not used, but kept for API)
     # The actual pixel_shap is created per-image in run_pixelshap_for_image
     dummy_segmentation_model = build_segmentation_model(
-        answer_tokens=["person", "man", "woman"],  # dummy tokens
+        generated_answer="person, man, woman",  # dummy answer
         device=device
     )
     manipulator = build_manipulator(device=device)
