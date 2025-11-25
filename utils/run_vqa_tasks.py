@@ -481,17 +481,19 @@ def run_vqa_task(
             # --------------------------------------------------------
             # PixelSHAP integration: per-image folder + meta.json
             # --------------------------------------------------------
-            if pixel_shap is not None and pixelshap_out_dir is not None and token_entropy:
+            # Use token_entropy_raw (all tokens) instead of filtered token_entropy
+            if pixel_shap is not None and pixelshap_out_dir is not None and token_entropy_raw:
         
                 # sample index from the outer loop (for i, s in enumerate(..., 1))
                 sample_idx = i
         
                 # select tokens: all tokens if max_tokens_pixelshap is None, otherwise top-K
+                # Use token_entropy_raw (all tokens from complete answer) for selection
                 sorted_tokens = sorted(
-                    token_entropy.items(), key=lambda kv: kv[1], reverse=True
+                    token_entropy_raw.items(), key=lambda kv: kv[1], reverse=True
                 )
                 if max_tokens_pixelshap is None:
-                    # Use all tokens from the explanation
+                    # Use all tokens from the complete answer
                     selected_tokens = [t for t, H in sorted_tokens]
                 else:
                     # Use top-K tokens
@@ -512,7 +514,7 @@ def run_vqa_task(
                 img_out_dir = os.path.join(pixelshap_out_dir, img_dir_name)
                 os.makedirs(img_out_dir, exist_ok=True)
         
-                # meta.json with full answer + all tokens
+                # meta.json with full answer + all tokens with entropy
                 meta_path = os.path.join(img_out_dir, "meta.json")
                 meta = {
                     "sample_index": sample_idx,
@@ -521,8 +523,9 @@ def run_vqa_task(
                     "question": s.question,
                     "model_answer": pred_full,          # full "<answer> because <expl>"
                     "ground_truth_answer": gt,
-                    "explanation_tokens": list(token_entropy.keys()),  # all tokens
-                    "token_entropy": token_entropy,  # all tokens with entropy values
+                    "all_tokens": list(token_entropy_raw.keys()),  # all tokens from complete answer
+                    "token_entropy": token_entropy_raw,  # all tokens with entropy values (complete answer)
+                    "explanation_tokens": list(token_entropy.keys()) if token_entropy else [],  # filtered tokens (explanation only)
                 }
                 try:
                     import json
@@ -538,9 +541,6 @@ def run_vqa_task(
                     # Use the token with highest entropy for the overlay
                     most_important_token = selected_tokens[0]
                     try:
-                        # Extract all answer tokens for segmentation model
-                        answer_tokens = list(token_entropy.keys())
-                        
                         # Determine device from model
                         device = next(model.parameters()).device
                         device_str = "cuda" if device.type == "cuda" else "cpu"
@@ -557,9 +557,10 @@ def run_vqa_task(
                         # Get temp_dir from pixel_shap if available, otherwise use default
                         temp_dir = getattr(pixel_shap, 'temp_dir', 'pixelshap_tmp') if pixel_shap else 'pixelshap_tmp'
                         
+                        # Pass complete generated answer to build_segmentation_model
                         out_path = run_pixelshap_for_image(
                             vlm_cfg=vlm_cfg,
-                            answer_tokens=answer_tokens,
+                            generated_answer=pred_full,  # complete answer: "<answer> because <explanation>"
                             image_path=s.image_path,
                             base_prompt=base_prompt_for_pixelshap,
                             token=most_important_token,
