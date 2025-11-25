@@ -319,7 +319,8 @@ def run_pixelshap_for_token(
 
 
 def run_pixelshap_for_image(
-    pixel_shap,
+    vlm_cfg: VLMConfig,
+    answer_tokens: list,
     image_path: str,
     base_prompt: str,
     token: str,
@@ -330,17 +331,40 @@ def run_pixelshap_for_image(
     question: Optional[str] = None,
     model_answer: Optional[str] = None,
     gt_answer: Optional[str] = None,
+    vectorizer: Optional[Any] = None,
+    temp_dir: str = "pixelshap_tmp",
+    debug: bool = False,
 ) -> str:
     """
     Run PixelSHAP for an image and save an overlay image.
+    Creates a new segmentation model for each image based on the answer tokens.
     Similar to run_pixelshap_for_token, but uses a generic filename (overlay.png)
     instead of token-specific naming.
 
     The overlay is stored in the provided directory along with meta.json.
 
+    Args:
+        vlm_cfg: VLMConfig containing model, processor, device, etc.
+        answer_tokens: List of tokens from the generated answer/explanation
+        image_path: Path to the image
+        base_prompt: Base prompt for the VLM
+        token: Specific token to focus on in the explanation
+        out_dir: Output directory for the overlay
+        sampling_ratio: Sampling ratio for PixelSHAP
+        max_combinations: Maximum combinations for PixelSHAP
+        image_id: Optional image ID
+        question: Optional question text
+        model_answer: Optional model answer
+        gt_answer: Optional ground truth answer
+        vectorizer: Optional vectorizer (if None, uses default)
+        temp_dir: Temporary directory for PixelSHAP
+        debug: Debug mode flag
+
     Returns:
         Path to the saved overlay image.
     """
+    from utils.pixelshap_setup import build_segmentation_model, build_manipulator
+    
     # base output dir for all images (already created by caller)
     os.makedirs(out_dir, exist_ok=True)
 
@@ -360,6 +384,25 @@ def run_pixelshap_for_image(
                 json.dump(meta, f, indent=2, ensure_ascii=False)
         except Exception as e:
             print(f"[WARN] Could not write meta.json for {out_dir}: {e}")
+
+    # Build segmentation model with answer tokens
+    segmentation_model = build_segmentation_model(
+        answer_tokens=answer_tokens,
+        device=vlm_cfg.device,
+    )
+    
+    # Build manipulator
+    manipulator = build_manipulator(device=vlm_cfg.device)
+    
+    # Build PixelSHAP with the new segmentation model
+    pixel_shap = build_pixelshap(
+        vlm_cfg=vlm_cfg,
+        segmentation_model=segmentation_model,
+        manipulator=manipulator,
+        vectorizer=vectorizer,
+        temp_dir=temp_dir,
+        debug=debug,
+    )
 
     # build prompt for this specific token
     prompt = (
