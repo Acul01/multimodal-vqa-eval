@@ -477,7 +477,7 @@ def run_vqa_task(
         else:
             raise ValueError(f"Unsupported task: {task}")
 
-        results.append({
+        result_dict = {
             "task": task,
             "split": split,
             "idx": i,
@@ -489,7 +489,11 @@ def run_vqa_task(
             "prompt_mode": prompt_mode,
             "token_entropy": token_entropy,
             "pixelshap_overlays": pixelshap_paths,
-        })
+        }
+        # Add choices for VCR task so they're available in eval.py
+        if task == "VCR":
+            result_dict["choices"] = choices
+        results.append(result_dict)
 
     valid_hits = [r["correct"] for r in results if r["correct"] is not None]
     if valid_hits:
