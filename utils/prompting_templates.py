@@ -42,16 +42,16 @@ def add_fewshot_examples(conversation: List[Dict], examples: List[Dict], k: int)
 # ---------------------------------------------------------
 VQAX_FEWSHOT = [
     {
-        "user": "Question: What is the man holding?",
-        "assistant": "guitar because he is holding a stringed instrument across his body",
+        "user": "Question: Is there a dog in the image?",
+        "assistant": "yes because a dog is visible in the picture",
+    },
+    {
+        "user": "Question: How many people are in the image?",
+        "assistant": "3 because there are three individuals visible",
     },
     {
         "user": "Question: What color is the bus?",
         "assistant": "yellow because the vehicle is painted bright yellow",
-    },
-    {
-        "user": "Question: What is the woman doing?",
-        "assistant": "cooking because she is standing in front of a stove with pans",
     },
 ]
 

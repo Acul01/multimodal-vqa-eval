@@ -9,6 +9,7 @@ from typing import List, Dict, Tuple, Optional
 import pandas as pd
 
 from utils.load_data import load_vqax, load_actx, load_esnlive, load_vcr
+from utils.postprocessing import postprocess_prediction, normalize_answer
 
 from sentence_transformers import SentenceTransformer, util
 
@@ -19,8 +20,7 @@ except Exception:
     SEM_MODEL = None
     print("Warning: Could not load semantic similarity model!")
 
-_ARTICLES = {"a", "an", "the"}
-
+# _ARTICLES moved to utils/postprocessing.py
 
 def _save_dataframe(df: pd.DataFrame, csv_path: str) -> str:
     """
@@ -68,59 +68,29 @@ def semantic_similarity(a: str, b: str) -> float:
     return float(sim)
 
 
+# Use unified postprocessing functions
 def _normalize_answer(s: Optional[str]) -> str:
-    if not s:
-        return ""
-    s = s.lower().strip()
-    s = re.sub(r"[^a-z0-9\s]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    toks = [t for t in s.split() if t not in _ARTICLES]
-    return " ".join(toks)
+    """Wrapper for normalize_answer from postprocessing module."""
+    return normalize_answer(s or "")
 
 
-def _normalize_generated_text_eval(text: str) -> str:
-    t = (text or "").strip()
-
-    # mögliche Präfixe entfernen
-    t = re.sub(r'^(?:assistant:|response:|answer:|question:)\s*', "", t, flags=re.I)
-
-    # lowercase
-    t = t.lower()
-
-    # nur alphanumerisch + Leerzeichen
-    t = re.sub(r"[^a-z0-9\s]+", " ", t)
-
-    # Leerzeichen normalisieren
-    t = re.sub(r"\s+", " ", t).strip()
-
-    # störende Wörter entfernen
-    remove_words = {"answer", "question", "explanation"}
-    toks = [w for w in t.split() if w not in remove_words]
-
-    return " ".join(toks).strip()
-
-
-def _split_pred_expl(text: str) -> Tuple[str, str]:
+def _split_pred_expl(text: str, task: str = "VQA-X", vcr_choices: Optional[list] = None) -> Tuple[str, str]:
+    """
+    Split prediction into answer and explanation using unified postprocessing.
+    
+    Args:
+        text: Raw prediction text
+        task: Task type for task-specific processing
+        vcr_choices: For VCR task, list of choice texts
+    
+    Returns:
+        Tuple of (answer, explanation)
+    """
     if not isinstance(text, str):
         return "", ""
-
-    t = _normalize_generated_text_eval(text)
-    if not t:
-        return "", ""
-
-    # because-basiertes Splitten
-    if " because " in f" {t} ":
-        pred_part, expl_part = t.split("because", 1)
-        pred = pred_part.strip()
-        expl = expl_part.strip()
-    else:
-        words = t.split()
-        if not words:
-            return "", ""
-        pred = words[0]
-        expl = " ".join(words[1:]).strip()
-
-    return pred, expl
+    
+    result = postprocess_prediction(text, task, vcr_choices=vcr_choices)
+    return result["answer"], result["explanation"]
 
 
 # ============================================================
@@ -162,7 +132,7 @@ def evaluate_vqax_to_csv(
         gt_info = gt_by_path.get(key, {"gt_expl": "", "image_id": None})
 
         pred_full = r.get("prediction", "") or ""
-        pred_answer, pred_expl = _split_pred_expl(pred_full)
+        pred_answer, pred_expl = _split_pred_expl(pred_full, "VQA-X")
         gt_answer = r.get("ground_truth", "") or ""
 
         correct = int(_normalize_answer(pred_answer) == _normalize_answer(gt_answer))
@@ -235,7 +205,7 @@ def evaluate_actx_to_csv(
         info = gt_by_path.get(key, {"gt_expl": "", "image_id": None, "gt_label": ""})
 
         pred_full = r.get("prediction", "") or ""
-        pred_answer, pred_expl = _split_pred_expl(pred_full)
+        pred_answer, pred_expl = _split_pred_expl(pred_full, "ACT-X")
         pred_answer = pred_answer.lower()
         pred_expl = pred_expl.lower()
 
@@ -304,13 +274,9 @@ def evaluate_esnlive_to_csv(
             "image_name": base_name,
         }
 
+    # Use unified normalize_answer function
     def _norm(s: str) -> str:
-        s = (s or "").lower().strip()
-        s = re.sub(r"[^a-z0-9\s]", " ", s)
-        s = re.sub(r"\s+", " ", s).strip()
-        articles = {"a", "an", "the"}
-        toks = [t for t in s.split() if t not in articles]
-        return " ".join(toks)
+        return normalize_answer(s)
 
     rows = []
     for r in results:
@@ -330,13 +296,7 @@ def evaluate_esnlive_to_csv(
             )
 
         pred_full = r.get("prediction", "") or ""
-        if " because " in pred_full:
-            gen_label, gen_expl = pred_full.split(" because ", 1)
-        else:
-            parts = pred_full.strip().split()
-            gen_label = " ".join(parts[:2]) if len(parts) >= 2 else (parts[0] if parts else "")
-            gen_expl = " ".join(parts[2:]) if len(parts) > 2 else ""
-
+        gen_label, gen_expl = _split_pred_expl(pred_full, "ESNLI-VE")
         gen_label = gen_label.lower().strip()
         gen_expl = gen_expl.lower().strip()
         gt_label = (r.get("ground_truth") or info.get("gt_label") or "").strip()
@@ -404,13 +364,9 @@ def evaluate_vcr_to_csv(
             "choices": s.choices or [],
         }
 
+    # Use unified normalize_answer function
     def _norm(s: str) -> str:
-        s = (s or "").lower().strip()
-        s = re.sub(r"[^a-z0-9\s]", " ", s)
-        s = re.sub(r"\s+", " ", s).strip()
-        arts = {"a", "an", "the"}
-        toks = [t for t in s.split() if t not in arts]
-        return " ".join(toks)
+        return normalize_answer(s)
 
     rows = []
     for r in results:
@@ -428,13 +384,8 @@ def evaluate_vcr_to_csv(
         )
 
         gen_full = r.get("prediction", "") or ""
-        if " because " in gen_full:
-            gen_ans, gen_expl = gen_full.split(" because ", 1)
-        else:
-            toks = gen_full.split()
-            gen_ans = " ".join(toks[:2]) if len(toks) >= 2 else (toks[0] if toks else "")
-            gen_expl = " ".join(toks[2:]) if len(toks) > 2 else ""
-
+        choices = info.get("choices", [])
+        gen_ans, gen_expl = _split_pred_expl(gen_full, "VCR", vcr_choices=choices)
         gen_ans = gen_ans.lower().strip()
         gen_expl = gen_expl.lower().strip()
         gt_ans = (r.get("ground_truth") or info["gt_ans"] or "").strip()

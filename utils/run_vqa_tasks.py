@@ -20,6 +20,12 @@ from utils.prompting_templates import (
     prompt_vcr_expl,
 )
 
+# Unified postprocessing
+from utils.postprocessing import (
+    postprocess_prediction,
+    normalize_answer,
+)
+
 # -----------------------------
 # Canonical task mapping
 # -----------------------------
@@ -96,16 +102,7 @@ def majority_vqa_answer(raw_answers):
     return cnt.most_common(1)[0][0]
 
 
-def _force_label_space(label: str) -> str:
-    """Restrict ESNLI-VE label to one of the 3 valid options."""
-    l = (label or "").lower().strip()
-    if "entail" in l:
-        return "entailment"
-    if "contradict" in l:
-        return "contradiction"
-    if "neutral" in l:
-        return "neutral"
-    return "unknown"
+# _force_label_space() moved to utils/postprocessing.py
 
 
 def _is_qwen_model(model) -> bool:
@@ -135,147 +132,33 @@ def _inject_image_into_messages(messages, pil_image: Image.Image):
 import re
 
 # ----------------------------------------------------------
-# Gemeinsame Normalisierung, wie von dir spezifiziert
+# Legacy Postprocessing-Funktionen (Wrapper für Rückwärtskompatibilität)
 # ----------------------------------------------------------
-def _normalize_generated_text(text: str) -> str:
-    """
-    - lowercase
-    - alle Nicht-Alphanumerika entfernen (außer Leerzeichen)
-    - mehrfachspaces normalisieren
-    - Wörter 'answer', 'question', 'explanation' entfernen
-    """
-    t = (text or "").strip()
-
-    # Prefixe wie assistant:, response:, answer:, question: entfernen
-    t = re.sub(r'^(?:assistant:|response:|answer:|question:)\s*', "", t, flags=re.I)
-
-    # lowercase
-    t = t.lower()
-
-    # alles außer buchstaben + zahlen + space entfernen
-    t = re.sub(r"[^a-z0-9\s]+", " ", t)
-
-    # mehrfachspaces reduzieren
-    t = re.sub(r"\s+", " ", t).strip()
-
-    # störwörter entfernen
-    remove_words = {"answer", "question", "explanation"}
-    toks = [w for w in t.split() if w not in remove_words]
-
-    return " ".join(toks).strip()
-
-
-# ----------------------------------------------------------
-# BECAUSE-Splitter bleibt wie gefordert erhalten
-# ----------------------------------------------------------
-_BECAUSE_RE = re.compile(r"\bbecause\b", flags=re.I)
-
-def _split_on_because(text: str):
-    m = _BECAUSE_RE.search(text or "")
-    if not m:
-        return (text or "").strip(), ""
-    return (text[:m.start()].strip(), text[m.end():].strip())
-
-
-# ----------------------------------------------------------
-# GENERISCHE Logik für: answer + explanation
-# (wird von beiden Postprocessing-Funktionen verwendet)
-# ----------------------------------------------------------
-def _generic_postprocess_because(text: str) -> str:
-    """
-    Deine gewünschte Logik:
-
-    1. normalisieren
-    2. wenn 'because' vorkommt → linker Teil = answer, rechter Teil = explanation
-    3. sonst → erstes Wort = answer, Rest = explanation
-    4. Rückgabe: "<answer> because <explanation>"
-    """
-
-    t = _normalize_generated_text(text)
-
-    if not t:
-        return "unknown because explanation missing"
-
-    # Fall: because kommt vor
-    if " because " in f" {t} ":
-        left, right = t.split("because", 1)
-        answer_raw = left.strip()
-        expl_raw = right.strip()
-    else:
-        # kein because → erstes Wort Antwort
-        toks = t.split()
-        if not toks:
-            return "unknown because explanation missing"
-
-        answer_raw = toks[0]
-        expl_raw = " ".join(toks[1:]).strip()
-
-    answer = answer_raw if answer_raw else "unknown"
-    explanation = expl_raw if expl_raw else "explanation missing"
-
-    return f"{answer} because {explanation}"
-
-
-# ----------------------------------------------------------
-# Deine originalen Funktionsnamen mit neuer Logik
-# ----------------------------------------------------------
-def _postprocess_pred_because_expl(text: str) -> str:
-    """
-    Gleiche Aufgabe wie vorher, aber nun vollständig nach deinem Schema.
-    """
-    return _generic_postprocess_because(text)
-
+# Diese Funktionen werden durch postprocess_prediction() ersetzt,
+# bleiben aber als Wrapper erhalten falls sie noch verwendet werden.
 
 def _postprocess_vqax(text: str) -> str:
-    """
-    Gleiches Verhalten wie oben – VQA-X nutzt dieselbe Logik.
-    """
-    return _generic_postprocess_because(text)
+    """Legacy wrapper - use postprocess_prediction() instead."""
+    result = postprocess_prediction(text, "VQA-X")
+    return result["full_text"]
 
 
-# normalize_ans bleibt unverändert
-_ARTICLES = {"a", "an", "the"}
+def _postprocess_pred_because_expl(text: str) -> str:
+    """Legacy wrapper - use postprocess_prediction() instead."""
+    result = postprocess_prediction(text, "ACT-X")
+    return result["full_text"]
 
+
+# normalize_ans: Wrapper für Rückwärtskompatibilität
 def normalize_ans(s: str) -> str:
     """Lowercase, Strip, Punctuation raus, Artikel entfernen."""
-    s = (s or "").lower().strip()
-    s = re.sub(r"[^a-z0-9\s]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    toks = [t for t in s.split() if t not in _ARTICLES]
-    return " ".join(toks)
+    return normalize_answer(s)
 
 
 # -----------------------------
-# VCR-specific helpers
+# VCR-specific helpers (Legacy - now handled by postprocess_prediction)
 # -----------------------------
-_LETTER_TO_IDX = {"a": 0, "b": 1, "c": 2, "d": 3}
-
-def _parse_vcr_letter_and_expl(text: str):
-    """
-    Parse model output like 'C because ...' or 'answer: B because ...'
-    Returns (letter or None, explanation string).
-    """
-    t = (text or "").strip()
-    t = re.sub(r'^(assistant:|response:|answer:)\s*', "", t, flags=re.I)
-    t = t.replace("\n", " ").strip()
-
-    tokens = t.split()
-    letter = None
-    if tokens:
-        cand = tokens[0].lower().strip(":.")
-        if cand in _LETTER_TO_IDX:
-            letter = cand
-
-    m = _BECAUSE_RE.search(t)
-    if m:
-        expl = t[m.end():].strip()
-    else:
-        expl = ""
-
-    if not expl:
-        expl = "no further details"
-
-    return letter, expl
+# _parse_vcr_letter_and_expl() wurde durch postprocess_prediction() ersetzt
 
 
 # -----------------------------
@@ -497,8 +380,10 @@ def run_vqa_task(
             prompt = prompt_vqax_expl(s.question, prompt_mode)
             raw_pred, token_entropy_raw = generate_answer(model, processor, s.image_path, prompt)
 
-            pred_full = _postprocess_vqax(raw_pred)
-            pred_only, _, expl = pred_full.partition(" because ")
+            result = postprocess_prediction(raw_pred, "VQA-X")
+            pred_full = result["full_text"]
+            pred_only = result["answer"]
+            expl = result["explanation"]
 
             token_entropy = _filter_entropy_to_explanation(token_entropy_raw, expl)
 
@@ -510,8 +395,10 @@ def run_vqa_task(
             prompt = prompt_actx_expl(prompt_mode)
             raw_pred, token_entropy_raw = generate_answer(model, processor, s.image_path, prompt)
 
-            pred_full = _postprocess_pred_because_expl(raw_pred)
-            pred_only, _, expl = pred_full.partition(" because ")
+            result = postprocess_prediction(raw_pred, "ACT-X")
+            pred_full = result["full_text"]
+            pred_only = result["answer"]
+            expl = result["explanation"]
 
             token_entropy = _filter_entropy_to_explanation(token_entropy_raw, expl)
 
@@ -523,16 +410,10 @@ def run_vqa_task(
             prompt = prompt_esnlive_expl(s.hypothesis, prompt_mode)
             raw_pred, token_entropy_raw = generate_answer(model, processor, s.image_path, prompt)
 
-            pred_full = raw_pred.strip()
-            if "because" not in pred_full.lower():
-                pred_full = pred_full.replace(",", " because ", 1)
-
-            parts = re.split(r"\bbecause\b", pred_full, maxsplit=1, flags=re.I)
-            label = parts[0].strip().lower()
-            explanation = parts[1].strip().lower() if len(parts) > 1 else "explanation missing"
-
-            label = _force_label_space(label)
-            pred_full = f"{label} because {explanation}"
+            result = postprocess_prediction(raw_pred, "ESNLI-VE")
+            pred_full = result["full_text"]
+            label = result["answer"]
+            explanation = result["explanation"]
 
             token_entropy = _filter_entropy_to_explanation(token_entropy_raw, explanation)
 
@@ -545,21 +426,14 @@ def run_vqa_task(
             prompt = prompt_vcr_expl(s.question or "", choices, prompt_mode)
 
             raw_pred, token_entropy_raw = generate_answer(model, processor, s.image_path, prompt)
-            letter, expl = _parse_vcr_letter_and_expl(raw_pred)
+            result = postprocess_prediction(raw_pred, "VCR", vcr_choices=choices)
+            
+            pred_full = result["full_text"]
+            pred_answer_text = result["answer"]
+            expl = result["explanation"]
 
             token_entropy = _filter_entropy_to_explanation(token_entropy_raw, expl)
 
-            if letter is not None:
-                idx = _LETTER_TO_IDX.get(letter)
-            else:
-                idx = None
-
-            if idx is not None and 0 <= idx < len(choices):
-                pred_answer_text = choices[idx]
-            else:
-                pred_answer_text = "unknown"
-
-            pred_full = f"{pred_answer_text.lower()} because {expl.lower()}"
             hit = int(normalize_ans(pred_answer_text) == normalize_ans(gt)) if gt else None
             pred_to_store = pred_full
 
