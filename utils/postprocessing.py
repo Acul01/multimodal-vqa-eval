@@ -101,19 +101,29 @@ def _is_yes_no_or_number(word: str) -> bool:
     """
     if not word:
         return False
-    word_lower = word.lower().strip()
+    # Strip punctuation from the word before checking
+    word_clean = word.strip().rstrip(".,;:!?")
+    word_lower = word_clean.lower()
+    
+    # DEBUG
+    print(f"[DEBUG _is_yes_no_or_number] input: {repr(word)}, cleaned: {repr(word_clean)}, lower: {repr(word_lower)}")
+    
     # Check for yes/no
     if word_lower in ("yes", "no"):
+        print(f"[DEBUG _is_yes_no_or_number] Matched yes/no: {word_lower}")
         return True
     # Check if it's a number (integer or decimal)
     try:
         float(word_lower)
+        print(f"[DEBUG _is_yes_no_or_number] Matched number: {word_lower}")
         return True
     except ValueError:
         # Check if it's a word representation of a number (e.g., "one", "two", etc.)
         # For now, we'll just check for numeric strings
         if word_lower.isdigit():
+            print(f"[DEBUG _is_yes_no_or_number] Matched digit: {word_lower}")
             return True
+    print(f"[DEBUG _is_yes_no_or_number] No match for: {word_lower}")
     return False
 
 
@@ -155,14 +165,27 @@ def postprocess_answer_only(
     if not toks:
         return ""
     
+    # DEBUG: Print for VQA-X
+    if task == "VQA-X":
+        print(f"[DEBUG postprocess_answer_only] raw_text: {repr(raw_text)}")
+        print(f"[DEBUG postprocess_answer_only] cleaned_text: {repr(t)}")
+        print(f"[DEBUG postprocess_answer_only] tokens: {toks}")
+        print(f"[DEBUG postprocess_answer_only] first_token: {repr(toks[0])}")
+        is_yes_no_num = _is_yes_no_or_number(toks[0])
+        print(f"[DEBUG postprocess_answer_only] is_yes_no_or_number('{toks[0]}'): {is_yes_no_or_number}")
+    
     # Task-specific handling
     if task == "VQA-X":
         # Special case: If first word is yes/no/number, use only the first word
         # (cut after first word, regardless of how many words follow)
         if _is_yes_no_or_number(toks[0]):
-            return toks[0]
+            result = toks[0]
+            print(f"[DEBUG postprocess_answer_only] Returning only first word: {repr(result)}")
+            return result
         # Default: take first max_tokens (typically 2 for VQA-X)
-        return " ".join(toks[:max_tokens])
+        result = " ".join(toks[:max_tokens])
+        print(f"[DEBUG postprocess_answer_only] Returning first {max_tokens} tokens: {repr(result)}")
+        return result
     
     elif task == "ESNLI-VE":
         # e-SNLI-VE: Force label to valid space
