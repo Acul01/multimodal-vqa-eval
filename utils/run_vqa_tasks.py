@@ -433,15 +433,24 @@ def run_vqa_task(
             prompt = prompt_vcr_expl(s.question or "", choices, prompt_mode)
 
             raw_pred, token_entropy_raw = generate_answer(model, processor, s.image_path, prompt)
+            print(f"[DEBUG run_vqa_task VCR] raw_pred: {repr(raw_pred)}")
+            print(f"[DEBUG run_vqa_task VCR] gt: {repr(gt)}")
+            print(f"[DEBUG run_vqa_task VCR] choices: {choices}")
+            
             result = postprocess_prediction(raw_pred, "VCR", vcr_choices=choices)
             
             pred_full = result["full_text"]
             pred_answer_text = result["answer"]
             expl = result["explanation"]
 
+            print(f"[DEBUG run_vqa_task VCR] pred_answer_text: {repr(pred_answer_text)}")
+            print(f"[DEBUG run_vqa_task VCR] normalized pred: {repr(normalize_ans(pred_answer_text))}")
+            print(f"[DEBUG run_vqa_task VCR] normalized gt: {repr(normalize_ans(gt))}")
+
             token_entropy = filter_entropy_to_explanation(token_entropy_raw, expl)
 
             hit = int(normalize_ans(pred_answer_text) == normalize_ans(gt)) if gt else None
+            print(f"[DEBUG run_vqa_task VCR] hit: {hit}")
             pred_to_store = pred_full
 
             if pixel_shap is not None and pixelshap_out_dir is not None and token_entropy:
