@@ -73,6 +73,38 @@ def majority_vqa_answer(raw_answers):
     return cnt.most_common(1)[0][0]
 
 
+def _build_text_prompt(generated_answer: str) -> str:
+    """
+    Build text_prompt from generated answer (same logic as in build_segmentation_model).
+    Extracts alphanumeric tokens, converts to lowercase, removes duplicates, and joins with commas.
+    
+    Args:
+        generated_answer: Complete generated answer string (e.g., "<answer> because <explanation>")
+    
+    Returns:
+        Comma-separated string of unique tokens
+    """
+    import re
+    
+    # Extract all alphanumeric tokens from the complete answer
+    tokens = re.findall(r"[A-Za-z0-9]+", generated_answer)
+    
+    # Filter out empty tokens and convert to lowercase
+    filtered_tokens = [t.lower().strip() for t in tokens if t and t.strip()]
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_tokens = []
+    for token in filtered_tokens:
+        if token not in seen:
+            seen.add(token)
+            unique_tokens.append(token)
+    
+    # Join tokens with commas
+    text_prompt = ", ".join(unique_tokens)
+    return text_prompt
+
+
 def _is_qwen_model(model) -> bool:
     return model.__class__.__name__.startswith("Qwen3VLForConditionalGeneration")
 
@@ -293,16 +325,25 @@ def run_vqa_task(
         
                 # meta.json with full answer + all tokens with entropy
                 meta_path = os.path.join(img_out_dir, "meta.json")
+                
+                # Build text_prompt (same as used in build_segmentation_model)
+                text_prompt = _build_text_prompt(pred_full)
+                
+                # Get ground truth explanation
+                gt_explanation = getattr(s, "explanation", None) or ""
+                
                 meta = {
                     "sample_index": sample_idx,
                     "image_path": s.image_path,
                     "image_id": img_id,
                     "question": s.question,
-                    "model_answer": pred_full,          # full "<answer> because <expl>"
-                    "ground_truth_answer": gt,
-                    "all_tokens": list(token_entropy_raw.keys()),  # all tokens from complete answer
+                    "generated_text": raw_pred,  # kompletter vom Modell generierter Text (vor Postprocessing)
+                    "generated_answer": pred_only,  # Antwortteil des generierten Textes
+                    "generated_explanation": expl,  # Erklärungsteil des generierten Textes
+                    "gt_answer": gt,
+                    "gt_explanation": gt_explanation,
+                    "text_prompt": text_prompt,  # text_prompt der in build_segmentation_model übergeben wird
                     "token_entropy": token_entropy_raw,  # all tokens with entropy values (complete answer)
-                    "explanation_tokens": list(token_entropy.keys()) if token_entropy else [],  # filtered tokens (explanation only)
                 }
                 try:
                     import json

@@ -47,9 +47,7 @@ def build_segmentation_model(generated_answer: str, device: str = "cuda"):
     # Join tokens with commas
     text_prompt = ", ".join(unique_tokens)
     
-    # Fallback if no tokens found
-    if not text_prompt:
-        text_prompt = "person, man, woman, child, dog, cat, car, bus, bike"
+    print(f"Text prompt: {text_prompt}")
 
     segmentation_model = DinoSam2SegmentationModel(
         text_prompt=text_prompt,
