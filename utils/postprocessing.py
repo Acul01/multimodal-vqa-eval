@@ -83,14 +83,27 @@ def _parse_vcr_letter(text: str) -> Optional[str]:
     Returns the letter if found, None otherwise.
     """
     t = (text or "").strip()
+    
+    # DEBUG
+    print(f"[DEBUG _parse_vcr_letter] input: {repr(text)}")
+    
     t = re.sub(r'^(assistant:|response:|answer:)\s*', "", t, flags=re.I)
     t = t.replace("\n", " ").strip()
+    
+    # DEBUG
+    print(f"[DEBUG _parse_vcr_letter] after cleaning: {repr(t)}")
 
     tokens = t.split()
     if tokens:
         cand = tokens[0].lower().strip(":.")
+        print(f"[DEBUG _parse_vcr_letter] first token: {repr(tokens[0])}, candidate: {repr(cand)}")
         if cand in _LETTER_TO_IDX:
+            print(f"[DEBUG _parse_vcr_letter] Found letter: {cand}")
             return cand
+        else:
+            print(f"[DEBUG _parse_vcr_letter] '{cand}' not in {list(_LETTER_TO_IDX.keys())}")
+    else:
+        print(f"[DEBUG _parse_vcr_letter] No tokens found")
     return None
 
 
@@ -299,22 +312,29 @@ def postprocess_prediction(
     # Task-specific postprocessing
     if task == "VCR":
         # VCR: Extract letter and map to answer text
+        print(f"[DEBUG postprocess_prediction VCR] raw_text: {repr(raw_text)}")
+        print(f"[DEBUG postprocess_prediction VCR] vcr_choices: {vcr_choices}")
         letter = _parse_vcr_letter(raw_text)
+        print(f"[DEBUG postprocess_prediction VCR] parsed letter: {letter}")
         if letter is not None and vcr_choices and 0 <= _LETTER_TO_IDX[letter] < len(vcr_choices):
             answer_text = vcr_choices[_LETTER_TO_IDX[letter]]
+            print(f"[DEBUG postprocess_prediction VCR] mapped to answer_text: {repr(answer_text)}")
         else:
             answer_text = "unknown"
+            print(f"[DEBUG postprocess_prediction VCR] No valid letter found, using 'unknown'")
         
         # Use the explanation from normalized text, or default
         if not expl_raw:
             expl_raw = "no further details"
         
-        return {
+        result = {
             "answer": answer_text.lower(),
             "explanation": expl_raw,
             "full_text": f"{answer_text.lower()} because {expl_raw}",
             "raw_answer": letter or "unknown",
         }
+        print(f"[DEBUG postprocess_prediction VCR] returning: {result}")
+        return result
     
     elif task == "ESNLI-VE":
         # e-SNLI-VE: Force label to valid space
