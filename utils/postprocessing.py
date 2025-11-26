@@ -172,7 +172,7 @@ def postprocess_answer_only(
         print(f"[DEBUG postprocess_answer_only] tokens: {toks}")
         print(f"[DEBUG postprocess_answer_only] first_token: {repr(toks[0])}")
         is_yes_no_num = _is_yes_no_or_number(toks[0])
-        print(f"[DEBUG postprocess_answer_only] is_yes_no_or_number('{toks[0]}'): {is_yes_no_or_number}")
+        print(f"[DEBUG postprocess_answer_only] is_yes_no_or_number('{toks[0]}'): {is_yes_no_num}")
     
     # Task-specific handling
     if task == "VQA-X":
