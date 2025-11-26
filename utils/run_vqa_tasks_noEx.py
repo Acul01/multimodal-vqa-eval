@@ -19,8 +19,14 @@ from utils.prompting_templates import (
     prompt_vcr_answer_only,
 )
 
-# Import yes/no/number check function for answer cleaning
-from utils.postprocessing import _is_yes_no_or_number
+# Import all postprocessing functions
+from utils.postprocessing import (
+    postprocess_answer_only,
+    normalize_answer as normalize_ans,
+    _force_label_space,
+    _parse_vcr_letter,
+    LETTER_TO_IDX,
+)
 
 # -----------------------------
 # Canonical task mapping
@@ -45,18 +51,6 @@ ANN_DIR_MAP = {
     "VCR":      "VCR",
 }
 
-# -----------------------------
-# Normalizers / helpers
-# -----------------------------
-_ARTICLES = {"a", "an", "the"}
-
-def normalize_ans(s: str) -> str:
-    """Lowercase, strip punctuation, remove articles."""
-    s = (s or "").lower().strip()
-    s = re.sub(r"[^a-z0-9\s]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    toks = [t for t in s.split() if t not in _ARTICLES]
-    return " ".join(toks)
 
 def majority_vqa_answer(raw_answers):
     """Majority-vote over the 10 VQA answers."""
@@ -74,16 +68,7 @@ def majority_vqa_answer(raw_answers):
     cnt = collections.Counter([normalize_ans(t) for t in texts])
     return cnt.most_common(1)[0][0]
 
-def _force_label_space(label: str) -> str:
-    """Restrict ESNLI-VE labels to one of the 3 valid options."""
-    l = (label or "").lower().strip()
-    if "entail" in l:
-        return "entailment"
-    if "contradict" in l:
-        return "contradiction"
-    if "neutral" in l:
-        return "neutral"
-    return "unknown"
+# _force_label_space() moved to utils/postprocessing.py
 
 def _is_qwen_model(model) -> bool:
     return model.__class__.__name__.startswith("Qwen3VLForConditionalGeneration")
@@ -110,49 +95,6 @@ def _inject_image_into_messages(messages, pil_image: Image.Image):
     msgs.append({"role": "user", "content": [{"type": "image", "image": pil_image}]})
     return msgs
 
-def _clean_text(t: str) -> str:
-    t = (t or "").strip()
-    t = re.sub(r"^(assistant:|response:|answer:|question:)\s*", "", t, flags=re.I)
-    t = t.replace("\n", " ").strip()
-    return t
-
-def _answer_only_from_freeform(text: str, max_tokens: int = 3) -> str:
-    """
-    Heuristic: take only the first 1–3 tokens as the answer.
-    Useful if the model ignores the 'answer only' instruction.
-    
-    Special handling for VQA-X: If the answer starts with yes/no/number
-    and contains more than one word, use only the first word.
-    """
-    t = _clean_text(text)
-    toks = t.split()
-    if not toks:
-        return ""
-    
-    # Special case: If first word is yes/no/number and there are multiple words,
-    # use only the first word (cut after first word)
-    if len(toks) > 1 and _is_yes_no_or_number(toks[0]):
-        return toks[0]
-    
-    # Default: take first max_tokens
-    return " ".join(toks[:max_tokens])
-
-# -----------------------------
-# VCR-specific helpers
-# -----------------------------
-_LETTER_TO_IDX = {"a": 0, "b": 1, "c": 2, "d": 3}
-
-def _parse_vcr_letter(text: str) -> Optional[str]:
-    """
-    Parse model output like 'C', 'answer: B', etc.
-    Returns 'a'/'b'/'c'/'d' or None.
-    """
-    t = _clean_text(text)
-    toks = t.split()
-    if not toks:
-        return None
-    cand = toks[0].lower().strip(":.")
-    return cand if cand in _LETTER_TO_IDX else None
 
 # -----------------------------
 # Core generation
@@ -270,7 +212,7 @@ def run_vqa_task(
             # unified answer-only prompt
             prompt = prompt_vqax_answer_only(s.question)
             raw_pred = generate_answer(model, processor, s.image_path, prompt)
-            pred_ans = _answer_only_from_freeform(raw_pred, max_tokens=2)
+            pred_ans = postprocess_answer_only(raw_pred, "VQA-X", max_tokens=2)
             hit = int(normalize_ans(pred_ans) == normalize_ans(gt)) if gt else None
 
             results.append({
@@ -291,7 +233,7 @@ def run_vqa_task(
             # unified answer-only prompt
             prompt = prompt_actx_answer_only()
             raw_pred = generate_answer(model, processor, s.image_path, prompt)
-            pred_ans = _answer_only_from_freeform(raw_pred, max_tokens=3)
+            pred_ans = postprocess_answer_only(raw_pred, "ACT-X", max_tokens=3)
             hit = int(normalize_ans(pred_ans) == normalize_ans(gt)) if gt else None
 
             results.append({
@@ -312,9 +254,8 @@ def run_vqa_task(
             # unified answer-only prompt
             prompt = prompt_esnlive_answer_only(s.hypothesis)
             raw_pred = generate_answer(model, processor, s.image_path, prompt)
-            label = _force_label_space(raw_pred)
-            pred_ans = label
-            hit = int(normalize_ans(label) == normalize_ans(gt)) if gt else None
+            pred_ans = postprocess_answer_only(raw_pred, "ESNLI-VE")
+            hit = int(normalize_ans(pred_ans) == normalize_ans(gt)) if gt else None
 
             results.append({
                 "task": task,
@@ -344,12 +285,12 @@ def run_vqa_task(
             prompt = prompt_vcr_answer_only(s.question or "", choice_texts)
 
             raw_pred = generate_answer(model, processor, s.image_path, prompt)
-            letter = _parse_vcr_letter(raw_pred)
+            letter = postprocess_answer_only(raw_pred, "VCR")
 
             if letter is None:
                 pred_label = None
             else:
-                pred_label = _LETTER_TO_IDX.get(letter)
+                pred_label = LETTER_TO_IDX.get(letter)
 
             hit = int(pred_label == gt_label)
 
