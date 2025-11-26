@@ -6,6 +6,8 @@ from PIL import Image
 import torch
 import copy
 
+from utils.pixelshap_integration import run_pixelshap_for_token, run_pixelshap_for_image, VLMConfig 
+
 from utils.load_data import (
     load_vqax, load_actx, load_esnlive, load_vcr
 )
@@ -204,9 +206,15 @@ def run_vqa_task(
     split: str = "val",
     n_samples: Optional[int] = None,
     prompt_mode: str = "zero",
+    pixel_shap=None,
+    pixelshap_out_dir: Optional[str] = None,
+    max_tokens_pixelshap: Optional[int] = 3,
 ):
     """
     Unified entry point for VQA-X, ACT-X, ESNLI-VE, VCR (answer+explanation).
+    Uses prompting_templates.py for prompts.
+    Optionally computes PixelSHAP overlays for explanation tokens.
+    If max_tokens_pixelshap is None, uses all tokens from the explanation.
     """
     key = TASK_CANON.get(task.replace(" ", "").lower())
     if not key:
@@ -230,6 +238,8 @@ def run_vqa_task(
     results = []
     for i, s in enumerate(dataset, 1):
 
+        pixelshap_paths = None  # will hold (token, overlay_path) tuples if used
+
         if task == "VQA-X":
             gt = majority_vqa_answer(s.raw.get("answers"))
             prompt = prompt_vqax_expl(s.question, prompt_mode)
@@ -244,7 +254,107 @@ def run_vqa_task(
 
             hit = int(normalize_ans(pred_only) == normalize_ans(gt)) if gt else None
             pred_to_store = pred_full
-
+        
+            # --------------------------------------------------------
+            # PixelSHAP integration: per-image folder + meta.json
+            # --------------------------------------------------------
+            # Use token_entropy_raw (all tokens) instead of filtered token_entropy
+            if pixel_shap is not None and pixelshap_out_dir is not None and token_entropy_raw:
+        
+                # sample index from the outer loop (for i, s in enumerate(..., 1))
+                sample_idx = i
+        
+                # select tokens: all tokens if max_tokens_pixelshap is None, otherwise top-K
+                # Use token_entropy_raw (all tokens from complete answer) for selection
+                sorted_tokens = sorted(
+                    token_entropy_raw.items(), key=lambda kv: kv[1], reverse=True
+                )
+                if max_tokens_pixelshap is None:
+                    # Use all tokens from the complete answer
+                    selected_tokens = [t for t, H in sorted_tokens]
+                else:
+                    # Use top-K tokens
+                    selected_tokens = [t for t, H in sorted_tokens[:max_tokens_pixelshap]]
+        
+                # we use only the question as base prompt for PixelSHAP
+                base_prompt_for_pixelshap = s.question
+        
+                img_base = os.path.splitext(os.path.basename(s.image_path))[0]
+                img_id = getattr(s, "image_id", None)
+        
+                # create per-image directory
+                if img_id is not None:
+                    img_dir_name = f"{img_base}_id{img_id}"
+                else:
+                    img_dir_name = img_base
+        
+                img_out_dir = os.path.join(pixelshap_out_dir, img_dir_name)
+                os.makedirs(img_out_dir, exist_ok=True)
+        
+                # meta.json with full answer + all tokens with entropy
+                meta_path = os.path.join(img_out_dir, "meta.json")
+                meta = {
+                    "sample_index": sample_idx,
+                    "image_path": s.image_path,
+                    "image_id": img_id,
+                    "question": s.question,
+                    "model_answer": pred_full,          # full "<answer> because <expl>"
+                    "ground_truth_answer": gt,
+                    "all_tokens": list(token_entropy_raw.keys()),  # all tokens from complete answer
+                    "token_entropy": token_entropy_raw,  # all tokens with entropy values (complete answer)
+                    "explanation_tokens": list(token_entropy.keys()) if token_entropy else [],  # filtered tokens (explanation only)
+                }
+                try:
+                    import json
+                    with open(meta_path, "w", encoding="utf-8") as f:
+                        json.dump(meta, f, indent=2, ensure_ascii=False)
+                except Exception as e:
+                    print(f"[WARN] Could not write meta.json: {e}")
+        
+                # Create one overlay per image using the most important token (highest entropy)
+                # This represents the overall explanation for the image
+                pixelshap_paths = []
+                if selected_tokens:
+                    # Use the token with highest entropy for the overlay
+                    most_important_token = selected_tokens[0]
+                    try:
+                        # Determine device from model
+                        device = next(model.parameters()).device
+                        device_str = "cuda" if device.type == "cuda" else "cpu"
+                        
+                        # Create VLMConfig for PixelSHAP
+                        vlm_cfg = VLMConfig(
+                            model=model,
+                            processor=processor,
+                            device=device_str,
+                            max_new_tokens=40,
+                            task=task,
+                        )
+                        
+                        # Get temp_dir from pixel_shap if available, otherwise use default
+                        temp_dir = getattr(pixel_shap, 'temp_dir', 'pixelshap_tmp') if pixel_shap else 'pixelshap_tmp'
+                        
+                        # Pass complete generated answer to build_segmentation_model
+                        out_path = run_pixelshap_for_image(
+                            vlm_cfg=vlm_cfg,
+                            generated_answer=pred_full,  # complete answer: "<answer> because <explanation>"
+                            image_path=s.image_path,
+                            base_prompt=base_prompt_for_pixelshap,
+                            token=most_important_token,
+                            out_dir=img_out_dir,
+                            image_id=img_id,
+                            question=s.question,
+                            model_answer=pred_full,
+                            gt_answer=gt,
+                            temp_dir=temp_dir,
+                        )
+                        pixelshap_paths.append((most_important_token, out_path))
+                    except Exception as e:
+                        print(
+                            f"[WARN] PixelSHAP failed for sample {sample_idx}, "
+                            f"image {s.image_path}, token '{most_important_token}': {e}"
+                        )
+                
         elif task == "ACT-X":
             gt = s.label
             prompt = prompt_actx_expl(prompt_mode)
@@ -260,6 +370,27 @@ def run_vqa_task(
             hit = int(normalize_ans(pred_only) == normalize_ans(gt)) if gt else None
             pred_to_store = pred_full
 
+            if pixel_shap is not None and pixelshap_out_dir is not None and token_entropy:
+                sorted_tokens = sorted(
+                    token_entropy.items(),
+                    key=lambda kv: kv[1],
+                    reverse=True,
+                )
+                top_tokens = [t for t, H in sorted_tokens[:max_tokens_pixelshap]]
+
+                base_prompt_for_pixelshap = "Describe the human activity in this image."
+
+                pixelshap_paths = []
+                for tok in top_tokens:
+                    out_path = run_pixelshap_for_token(
+                        pixel_shap=pixel_shap,
+                        image_path=s.image_path,
+                        base_prompt=base_prompt_for_pixelshap,
+                        token=tok,
+                        out_dir=pixelshap_out_dir,
+                    )
+                    pixelshap_paths.append((tok, out_path))
+
         elif task == "ESNLI-VE":
             gt = s.label
             prompt = prompt_esnlive_expl(s.hypothesis, prompt_mode)
@@ -274,6 +405,27 @@ def run_vqa_task(
 
             hit = int(normalize_ans(label) == normalize_ans(gt)) if gt else None
             pred_to_store = pred_full
+
+            if pixel_shap is not None and pixelshap_out_dir is not None and token_entropy:
+                sorted_tokens = sorted(
+                    token_entropy.items(),
+                    key=lambda kv: kv[1],
+                    reverse=True,
+                )
+                top_tokens = [t for t, H in sorted_tokens[:max_tokens_pixelshap]]
+
+                base_prompt_for_pixelshap = s.hypothesis
+
+                pixelshap_paths = []
+                for tok in top_tokens:
+                    out_path = run_pixelshap_for_token(
+                        pixel_shap=pixel_shap,
+                        image_path=s.image_path,
+                        base_prompt=base_prompt_for_pixelshap,
+                        token=tok,
+                        out_dir=pixelshap_out_dir,
+                    )
+                    pixelshap_paths.append((tok, out_path))
 
         elif task == "VCR":
             choices = s.choices or []
@@ -292,6 +444,27 @@ def run_vqa_task(
             hit = int(normalize_ans(pred_answer_text) == normalize_ans(gt)) if gt else None
             pred_to_store = pred_full
 
+            if pixel_shap is not None and pixelshap_out_dir is not None and token_entropy:
+                sorted_tokens = sorted(
+                    token_entropy.items(),
+                    key=lambda kv: kv[1],
+                    reverse=True,
+                )
+                top_tokens = [t for t, H in sorted_tokens[:max_tokens_pixelshap]]
+
+                base_prompt_for_pixelshap = s.question or ""
+
+                pixelshap_paths = []
+                for tok in top_tokens:
+                    out_path = run_pixelshap_for_token(
+                        pixel_shap=pixel_shap,
+                        image_path=s.image_path,
+                        base_prompt=base_prompt_for_pixelshap,
+                        token=tok,
+                        out_dir=pixelshap_out_dir,
+                    )
+                    pixelshap_paths.append((tok, out_path))
+
         else:
             raise ValueError(f"Unsupported task: {task}")
 
@@ -306,6 +479,7 @@ def run_vqa_task(
             "correct": hit,
             "prompt_mode": prompt_mode,
             "token_entropy": token_entropy,
+            "pixelshap_overlays": pixelshap_paths,
         })
 
     valid_hits = [r["correct"] for r in results if r["correct"] is not None]
@@ -313,6 +487,6 @@ def run_vqa_task(
         acc = sum(valid_hits) / len(valid_hits)
         print(f"\n{task} {split} Accuracy ({prompt_mode}): {acc:.3f}")
     else:
-        print(f"\n{task} {split} ({prompt_mode}): keine evaluierbaren Ground-Truths gefunden.")
+        print(f"\n{task} {split} ({prompt_mode}): no evaluable ground truths found.")
 
     return results
