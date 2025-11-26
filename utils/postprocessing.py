@@ -77,9 +77,14 @@ def _force_label_space(label: str) -> str:
     return "unknown"
 
 
-def _parse_vcr_letter(text: str) -> Optional[str]:
+def _parse_vcr_letter(text: str, vcr_choices: Optional[list] = None) -> Optional[str]:
     """
     Parse VCR letter (A, B, C, or D) from text.
+    
+    First tries to find a letter ('a', 'b', 'c', 'd') at the start of the text.
+    If not found and vcr_choices are provided, tries to match the generated text
+    with one of the choices to determine the letter.
+    
     Returns the letter if found, None otherwise.
     """
     t = (text or "").strip()
@@ -93,6 +98,7 @@ def _parse_vcr_letter(text: str) -> Optional[str]:
     # DEBUG
     print(f"[DEBUG _parse_vcr_letter] after cleaning: {repr(t)}")
 
+    # First, try to find a letter at the start
     tokens = t.split()
     if tokens:
         cand = tokens[0].lower().strip(":.")
@@ -104,6 +110,50 @@ def _parse_vcr_letter(text: str) -> Optional[str]:
             print(f"[DEBUG _parse_vcr_letter] '{cand}' not in {list(_LETTER_TO_IDX.keys())}")
     else:
         print(f"[DEBUG _parse_vcr_letter] No tokens found")
+    
+    # If no letter found and choices are provided, try to match with choices
+    if vcr_choices:
+        print(f"[DEBUG _parse_vcr_letter] Trying to match with choices: {vcr_choices}")
+        # Normalize the generated text for comparison
+        # Remove "because" and everything after it
+        t_normalized = re.split(r'\bbecause\b', t, flags=re.I)[0].strip().lower()
+        # Remove trailing punctuation
+        t_normalized = re.sub(r'[.,;:!?]+$', '', t_normalized).strip()
+        # Normalize multiple spaces
+        t_normalized = re.sub(r'\s+', ' ', t_normalized)
+        print(f"[DEBUG _parse_vcr_letter] normalized text (before 'because'): {repr(t_normalized)}")
+        
+        # Try to match with each choice
+        for idx, choice in enumerate(vcr_choices):
+            if not choice:
+                continue
+            # Normalize choice text
+            choice_normalized = choice.strip().lower()
+            # Remove trailing punctuation
+            choice_normalized = re.sub(r'[.,;:!?]+$', '', choice_normalized).strip()
+            # Normalize multiple spaces
+            choice_normalized = re.sub(r'\s+', ' ', choice_normalized)
+            print(f"[DEBUG _parse_vcr_letter] comparing with choice {idx} ({list(_LETTER_TO_IDX.keys())[idx]}): {repr(choice_normalized)}")
+            
+            # Check if normalized text starts with choice (exact match at start)
+            if t_normalized.startswith(choice_normalized):
+                letter = list(_LETTER_TO_IDX.keys())[idx]
+                print(f"[DEBUG _parse_vcr_letter] Matched (starts with) choice {idx}, returning letter: {letter}")
+                return letter
+            
+            # Check if choice is contained in normalized text (for cases where there's extra text)
+            if choice_normalized in t_normalized and len(choice_normalized) > 20:  # Only if substantial match
+                letter = list(_LETTER_TO_IDX.keys())[idx]
+                print(f"[DEBUG _parse_vcr_letter] Matched (contains) choice {idx}, returning letter: {letter}")
+                return letter
+            
+            # Also try reverse: check if choice starts with normalized text (for partial matches)
+            if choice_normalized.startswith(t_normalized) and len(t_normalized) > 20:  # Only if substantial match
+                letter = list(_LETTER_TO_IDX.keys())[idx]
+                print(f"[DEBUG _parse_vcr_letter] Reverse match with choice {idx}, returning letter: {letter}")
+                return letter
+    
+    print(f"[DEBUG _parse_vcr_letter] No match found, returning None")
     return None
 
 
@@ -157,6 +207,7 @@ def postprocess_answer_only(
     raw_text: str,
     task: TaskType,
     max_tokens: int = 3,
+    vcr_choices: Optional[list] = None,
 ) -> str:
     """
     Postprocess answer-only predictions (no explanations).
@@ -165,6 +216,7 @@ def postprocess_answer_only(
         raw_text: Raw model output text
         task: Task type ("VQA-X", "ACT-X", "ESNLI-VE", "VCR")
         max_tokens: Maximum number of tokens to keep (default: 3)
+        vcr_choices: For VCR task, list of choice texts to map letter to answer
     
     Returns:
         Cleaned answer string
@@ -208,7 +260,7 @@ def postprocess_answer_only(
     
     elif task == "VCR":
         # VCR: Parse letter (A, B, C, or D)
-        letter = _parse_vcr_letter(raw_text)
+        letter = _parse_vcr_letter(raw_text, vcr_choices)
         return letter if letter else ""
     
     else:
@@ -314,7 +366,7 @@ def postprocess_prediction(
         # VCR: Extract letter and map to answer text
         print(f"[DEBUG postprocess_prediction VCR] raw_text: {repr(raw_text)}")
         print(f"[DEBUG postprocess_prediction VCR] vcr_choices: {vcr_choices}")
-        letter = _parse_vcr_letter(raw_text)
+        letter = _parse_vcr_letter(raw_text, vcr_choices)
         print(f"[DEBUG postprocess_prediction VCR] parsed letter: {letter}")
         if letter is not None and vcr_choices and 0 <= _LETTER_TO_IDX[letter] < len(vcr_choices):
             answer_text = vcr_choices[_LETTER_TO_IDX[letter]]

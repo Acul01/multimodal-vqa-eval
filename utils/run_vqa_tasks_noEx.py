@@ -285,7 +285,7 @@ def run_vqa_task(
             prompt = prompt_vcr_answer_only(s.question or "", choice_texts)
 
             raw_pred = generate_answer(model, processor, s.image_path, prompt)
-            letter = postprocess_answer_only(raw_pred, "VCR")
+            letter = postprocess_answer_only(raw_pred, "VCR", vcr_choices=choice_texts)
 
             if letter is None:
                 pred_label = None
