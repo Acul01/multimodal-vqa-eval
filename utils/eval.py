@@ -111,9 +111,9 @@ def evaluate_vqax_to_csv(
 
     Columns:
         image_id, question, gt_answer, generated_answer,
-        gt_explanation, generated_explanation, correct (0/1), token_entropy
+        gt_explanation, generated_explanation, correct (0/1),
+        token_entropy, pixelshap_overlays
     """
-    # 1) Load GT explanations and image_ids from NLE
     gt_samples = load_vqax(images_root, nle_root_vqax, split=split, require_image=False)
     gt_by_path = {}
     for s in gt_samples:
@@ -124,7 +124,6 @@ def evaluate_vqax_to_csv(
             "image_id": s.image_id,
         }
 
-    # 2) Build rows
     rows = []
     for r in results:
         img_path = r.get("image", "") or ""
@@ -139,13 +138,14 @@ def evaluate_vqax_to_csv(
 
         image_id = gt_info.get("image_id")
         if image_id is None:
-            # Fallback: try to parse numeric id from filename
             m = re.search(r"(\d+)", os.path.basename(img_path))
             image_id = int(m.group(1)) if m else None
 
-        # token-wise entropy (dict) from results; store as JSON string
         entropy_dict = r.get("token_entropy", None)
         entropy_str = json.dumps(entropy_dict) if entropy_dict is not None else None
+
+        overlays = r.get("pixelshap_overlays", None)
+        overlays_str = json.dumps(overlays) if overlays is not None else None
 
         rows.append({
             "image_id": image_id,
@@ -156,12 +156,13 @@ def evaluate_vqax_to_csv(
             "generated_explanation": pred_expl,
             "correct": correct,
             "token_entropy": entropy_str,
+            "pixelshap_overlays": overlays_str,
         })
 
     df = pd.DataFrame(rows, columns=[
         "image_id", "question", "gt_answer", "generated_answer",
         "gt_explanation", "generated_explanation", "correct",
-        "token_entropy",
+        "token_entropy", "pixelshap_overlays",
     ])
 
     os.makedirs(save_dir, exist_ok=True)
@@ -185,7 +186,8 @@ def evaluate_actx_to_csv(
 
     Columns:
         image_id, gt_label, generated_label,
-        gt_explanation, generated_explanation, correct, token_entropy
+        gt_explanation, generated_explanation, correct,
+        token_entropy, pixelshap_overlays
     """
     gt_samples = load_actx(images_root, nle_root_actx, split=split, require_image=False)
     gt_by_path = {}
@@ -220,6 +222,9 @@ def evaluate_actx_to_csv(
         entropy_dict = r.get("token_entropy", None)
         entropy_str = json.dumps(entropy_dict) if entropy_dict is not None else None
 
+        overlays = r.get("pixelshap_overlays", None)
+        overlays_str = json.dumps(overlays) if overlays is not None else None
+
         rows.append({
             "image_id": image_id,
             "gt_label": gt_label,
@@ -228,12 +233,13 @@ def evaluate_actx_to_csv(
             "generated_explanation": pred_expl,
             "correct": correct,
             "token_entropy": entropy_str,
+            "pixelshap_overlays": overlays_str,
         })
 
     df = pd.DataFrame(rows, columns=[
         "image_id", "gt_label", "generated_label",
         "gt_explanation", "generated_explanation", "correct",
-        "token_entropy",
+        "token_entropy", "pixelshap_overlays",
     ])
 
     os.makedirs(save_dir, exist_ok=True)
@@ -256,9 +262,9 @@ def evaluate_esnlive_to_csv(
     Evaluate e-SNLI-VE results with "<label> because <explanation>" predictions.
 
     Columns:
-      image_name, image_numeric_id (optional, parsed), hypothesis,
+      image_name, image_numeric_id, hypothesis,
       gt_label, generated_label, gt_explanation, generated_explanation,
-      correct, token_entropy
+      correct, token_entropy, pixelshap_overlays
     """
     gt_samples = load_esnlive(images_root, nle_root_esnlive, split=split, require_image=False)
 
@@ -309,6 +315,9 @@ def evaluate_esnlive_to_csv(
         entropy_dict = r.get("token_entropy", None)
         entropy_str = json.dumps(entropy_dict) if entropy_dict is not None else None
 
+        overlays = r.get("pixelshap_overlays", None)
+        overlays_str = json.dumps(overlays) if overlays is not None else None
+
         rows.append({
             "image_name": info.get("image_name") or base_name,
             "image_numeric_id": numeric_id,
@@ -319,13 +328,14 @@ def evaluate_esnlive_to_csv(
             "generated_explanation": gen_expl,
             "correct": correct,
             "token_entropy": entropy_str,
+            "pixelshap_overlays": overlays_str,
         })
 
     df = pd.DataFrame(rows, columns=[
         "image_name", "image_numeric_id", "hypothesis",
         "gt_label", "generated_label",
         "gt_explanation", "generated_explanation",
-        "correct", "token_entropy",
+        "correct", "token_entropy", "pixelshap_overlays",
     ])
 
     os.makedirs(save_dir, exist_ok=True)
@@ -347,7 +357,8 @@ def evaluate_vcr_to_csv(
     """
     Save VCR results as CSV with:
     image_name, question, gt_answer, generated_answer,
-    gt_explanation, generated_explanation, options, correct, token_entropy
+    gt_explanation, generated_explanation, options, correct,
+    token_entropy, pixelshap_overlays
 
     'options' contains all 4 multiple-choice answers as a single string.
     """
@@ -392,12 +403,14 @@ def evaluate_vcr_to_csv(
 
         correct = int(_norm(gen_ans) == _norm(gt_ans)) if gt_ans else 0
 
-        # join all 4 options into one string
         choices = info.get("choices", [])
         options_str = " || ".join(choices) if choices else ""
 
         entropy_dict = r.get("token_entropy", None)
         entropy_str = json.dumps(entropy_dict) if entropy_dict is not None else None
+
+        overlays = r.get("pixelshap_overlays", None)
+        overlays_str = json.dumps(overlays) if overlays is not None else None
 
         rows.append({
             "image_name": info["image_name"],
@@ -409,6 +422,7 @@ def evaluate_vcr_to_csv(
             "options": options_str,
             "correct": correct,
             "token_entropy": entropy_str,
+            "pixelshap_overlays": overlays_str,
         })
 
     df = pd.DataFrame(rows, columns=[
@@ -421,6 +435,7 @@ def evaluate_vcr_to_csv(
         "options",
         "correct",
         "token_entropy",
+        "pixelshap_overlays",
     ])
 
     os.makedirs(save_dir, exist_ok=True)
