@@ -395,11 +395,30 @@ def evaluate_vcr_to_csv(
         )
 
         gen_full = r.get("prediction", "") or ""
-        choices = info.get("choices", [])
+        # Use choices from results if available (more reliable than mapping by image path)
+        choices = r.get("choices") or info.get("choices", [])
         gen_ans, gen_expl = _split_pred_expl(gen_full, "VCR", vcr_choices=choices)
         gen_ans = gen_ans.lower().strip()
         gen_expl = gen_expl.lower().strip()
-        gt_ans = (r.get("ground_truth") or info["gt_ans"] or "").strip()
+        
+        # Get GT answer: prefer from results, then from info
+        gt_ans_from_results = r.get("ground_truth", "")
+        gt_ans_from_info = info.get("gt_ans", "")
+        gt_ans = (gt_ans_from_results or gt_ans_from_info or "").strip()
+        
+        # DEBUG: Check if gt_ans is in choices
+        if choices and gt_ans:
+            gt_normalized = _norm(gt_ans)
+            choices_normalized = [_norm(c) for c in choices]
+            is_in_choices = gt_normalized in choices_normalized
+            if not is_in_choices:
+                print(f"[DEBUG eval.py VCR] GT_Answer '{gt_ans}' (normalized: '{gt_normalized}') is NOT in choices:")
+                print(f"  GT from results: {repr(gt_ans_from_results)}")
+                print(f"  GT from info: {repr(gt_ans_from_info)}")
+                print(f"  Choices: {choices}")
+                print(f"  Normalized choices: {choices_normalized}")
+                print(f"  Image: {img_path}")
+                print(f"  Base: {base}")
 
         correct = int(_norm(gen_ans) == _norm(gt_ans)) if gt_ans else 0
 
