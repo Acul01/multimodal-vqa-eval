@@ -490,9 +490,11 @@ def run_vqa_task(
             "token_entropy": token_entropy,
             "pixelshap_overlays": pixelshap_paths,
         }
-        # Add choices for VCR task so they're available in eval.py
+        # Add task-specific fields
         if task == "VCR":
             result_dict["choices"] = choices
+            # Add sample_id for VCR to enable unique mapping (multiple questions per image)
+            result_dict["sample_id"] = getattr(s, "sample_id", None)
         results.append(result_dict)
 
     valid_hits = [r["correct"] for r in results if r["correct"] is not None]

@@ -363,16 +363,34 @@ def evaluate_vcr_to_csv(
     'options' contains all 4 multiple-choice answers as a single string.
     """
     gt_samples = load_vcr(images_root, nle_root_vcr, split=split, require_image=False)
-    gt_by_key = {}
+    # Create mapping by sample_id (unique per question) and also by image path (fallback)
+    gt_by_sample_id = {}
+    gt_by_image_path = {}
     for s in gt_samples:
         full = s.image_path or ""
         base = os.path.basename(full) if full else ""
-        gt_by_key[(full, base)] = {
+        sample_id = s.sample_id or ""
+        
+        # Primary mapping: by sample_id (unique per question)
+        if sample_id:
+            gt_by_sample_id[sample_id] = {
+                "gt_expl": s.explanation or "",
+                "gt_ans": s.answer or "",
+                "image_name": base,
+                "question": s.question or "",
+                "choices": s.choices or [],
+                "sample_id": sample_id,
+            }
+        
+        # Fallback mapping: by image path (for backwards compatibility)
+        # Note: This may not be unique if multiple questions share the same image
+        gt_by_image_path[(full, base)] = {
             "gt_expl": s.explanation or "",
             "gt_ans": s.answer or "",
             "image_name": base,
             "question": s.question or "",
             "choices": s.choices or [],
+            "sample_id": sample_id,
         }
 
     # Use unified normalize_answer function
@@ -383,28 +401,42 @@ def evaluate_vcr_to_csv(
     for r in results:
         img_path = r.get("image", "") or ""
         base = os.path.basename(img_path)
-        info = gt_by_key.get(
-            (img_path, base),
-            {
-                "gt_expl": "",
-                "gt_ans": r.get("ground_truth", ""),
-                "image_name": base,
-                "question": r.get("question", ""),
-                "choices": [],
-            },
-        )
+        sample_id = r.get("sample_id", "")
+        
+        # Try to find matching GT sample by sample_id first (most reliable)
+        info = None
+        if sample_id and sample_id in gt_by_sample_id:
+            info = gt_by_sample_id[sample_id]
+        else:
+            # Fallback: try image path mapping (may not be unique)
+            info = gt_by_image_path.get(
+                (img_path, base),
+                {
+                    "gt_expl": "",
+                    "gt_ans": r.get("ground_truth", ""),
+                    "image_name": base,
+                    "question": r.get("question", ""),
+                    "choices": [],
+                    "sample_id": sample_id,
+                },
+            )
 
         gen_full = r.get("prediction", "") or ""
-        # Use choices from results if available (more reliable than mapping by image path)
-        choices = r.get("choices") or info.get("choices", [])
+        # Use choices from info (correctly mapped GT data) if available, otherwise from results
+        # This ensures we use the choices that match the question
+        choices = info.get("choices", []) or r.get("choices", [])
         gen_ans, gen_expl = _split_pred_expl(gen_full, "VCR", vcr_choices=choices)
         gen_ans = gen_ans.lower().strip()
         gen_expl = gen_expl.lower().strip()
         
-        # Get GT answer: prefer from results, then from info
-        gt_ans_from_results = r.get("ground_truth", "")
+        # Get GT answer: prefer from info (correctly mapped), then from results
+        # This ensures we use the GT answer that matches the question/choices
         gt_ans_from_info = info.get("gt_ans", "")
-        gt_ans = (gt_ans_from_results or gt_ans_from_info or "").strip()
+        gt_ans_from_results = r.get("ground_truth", "")
+        gt_ans = (gt_ans_from_info or gt_ans_from_results or "").strip()
+        
+        # Use question from info if available (correctly mapped), otherwise from results
+        question = info.get("question", "") or r.get("question", "")
         
         # DEBUG: Check if gt_ans is in choices
         if choices and gt_ans:
@@ -422,7 +454,7 @@ def evaluate_vcr_to_csv(
 
         correct = int(_norm(gen_ans) == _norm(gt_ans)) if gt_ans else 0
 
-        choices = info.get("choices", [])
+        # Use choices from info (already set above, but ensure we use the same for options_str)
         options_str = " || ".join(choices) if choices else ""
 
         entropy_dict = r.get("token_entropy", None)
@@ -432,11 +464,11 @@ def evaluate_vcr_to_csv(
         overlays_str = json.dumps(overlays) if overlays is not None else None
 
         rows.append({
-            "image_name": info["image_name"],
-            "question": info["question"],
+            "image_name": info.get("image_name", base),
+            "question": question or info.get("question", ""),
             "gt_answer": gt_ans,
             "generated_answer": gen_ans,
-            "gt_explanation": info["gt_expl"],
+            "gt_explanation": info.get("gt_expl", ""),
             "generated_explanation": gen_expl,
             "options": options_str,
             "correct": correct,
