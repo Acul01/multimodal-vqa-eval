@@ -15,6 +15,9 @@ _ARTICLES = {"a", "an", "the"}
 _BECAUSE_RE = re.compile(r"\bbecause\b", flags=re.I)
 _LETTER_TO_IDX = {"a": 0, "b": 1, "c": 2, "d": 3}
 
+# Export for use in other modules
+LETTER_TO_IDX = _LETTER_TO_IDX
+
 
 def normalize_generated_text(text: str) -> str:
     """
@@ -112,6 +115,69 @@ def _is_yes_no_or_number(word: str) -> bool:
         if word_lower.isdigit():
             return True
     return False
+
+
+def clean_text(text: str) -> str:
+    """
+    Clean text for answer-only postprocessing:
+    - Remove prefixes (assistant:, response:, answer:, question:)
+    - Remove newlines
+    - Strip whitespace
+    """
+    t = (text or "").strip()
+    t = re.sub(r"^(assistant:|response:|answer:|question:)\s*", "", t, flags=re.I)
+    t = t.replace("\n", " ").strip()
+    return t
+
+
+def postprocess_answer_only(
+    raw_text: str,
+    task: TaskType,
+    max_tokens: int = 3,
+) -> str:
+    """
+    Postprocess answer-only predictions (no explanations).
+    
+    Args:
+        raw_text: Raw model output text
+        task: Task type ("VQA-X", "ACT-X", "ESNLI-VE", "VCR")
+        max_tokens: Maximum number of tokens to keep (default: 3)
+    
+    Returns:
+        Cleaned answer string
+    """
+    if not raw_text:
+        return ""
+    
+    # Clean text
+    t = clean_text(raw_text)
+    toks = t.split()
+    if not toks:
+        return ""
+    
+    # Task-specific handling
+    if task == "VQA-X":
+        # Special case: If first word is yes/no/number, use only the first word
+        # (cut after first word, regardless of how many words follow)
+        if _is_yes_no_or_number(toks[0]):
+            return toks[0]
+        # Default: take first max_tokens (typically 2 for VQA-X)
+        return " ".join(toks[:max_tokens])
+    
+    elif task == "ESNLI-VE":
+        # e-SNLI-VE: Force label to valid space
+        # Take first word/token and force to valid label
+        label = _force_label_space(toks[0] if toks else "")
+        return label
+    
+    elif task == "VCR":
+        # VCR: Parse letter (A, B, C, or D)
+        letter = _parse_vcr_letter(raw_text)
+        return letter if letter else ""
+    
+    else:
+        # ACT-X and others: take first max_tokens
+        return " ".join(toks[:max_tokens])
 
 
 def postprocess_prediction(
