@@ -19,6 +19,9 @@ from utils.prompting_templates import (
     prompt_vcr_answer_only,
 )
 
+# Import yes/no/number check function for answer cleaning
+from utils.postprocessing import _is_yes_no_or_number
+
 # -----------------------------
 # Canonical task mapping
 # -----------------------------
@@ -117,11 +120,21 @@ def _answer_only_from_freeform(text: str, max_tokens: int = 3) -> str:
     """
     Heuristic: take only the first 1–3 tokens as the answer.
     Useful if the model ignores the 'answer only' instruction.
+    
+    Special handling for VQA-X: If the answer starts with yes/no/number
+    and contains more than one word, use only the first word.
     """
     t = _clean_text(text)
     toks = t.split()
     if not toks:
         return ""
+    
+    # Special case: If first word is yes/no/number and there are multiple words,
+    # use only the first word (cut after first word)
+    if len(toks) > 1 and _is_yes_no_or_number(toks[0]):
+        return toks[0]
+    
+    # Default: take first max_tokens
     return " ".join(toks[:max_tokens])
 
 # -----------------------------
