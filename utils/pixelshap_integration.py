@@ -554,6 +554,44 @@ def run_pixelshap_for_tokens(
                 cleanup_temp_files=True,
             )
             
+            # Extract SHAP value for this token's segments
+            token_shap_value = None
+            if shapley_values is not None and token_segments:
+                try:
+                    # shapley_values is typically a dict or array mapping segment indices to SHAP values
+                    # Get SHAP values for segments that belong to this token
+                    token_segment_shap_values = []
+                    
+                    if isinstance(shapley_values, dict):
+                        # If it's a dict, keys might be segment indices or segment IDs
+                        for seg_idx in token_segments:
+                            if seg_idx in shapley_values:
+                                token_segment_shap_values.append(shapley_values[seg_idx])
+                            # Also try string keys
+                            elif str(seg_idx) in shapley_values:
+                                token_segment_shap_values.append(shapley_values[str(seg_idx)])
+                    elif isinstance(shapley_values, (list, np.ndarray)):
+                        # If it's a list/array, indices correspond to segment order
+                        for seg_idx in token_segments:
+                            if seg_idx < len(shapley_values):
+                                token_segment_shap_values.append(shapley_values[seg_idx])
+                    
+                    # Aggregate SHAP values (use mean if multiple segments match the token)
+                    if token_segment_shap_values:
+                        token_shap_value = float(np.mean(token_segment_shap_values))
+                    elif len(shapley_values) > 0:
+                        # Fallback: use mean of all SHAP values if no specific match
+                        if isinstance(shapley_values, dict):
+                            all_values = list(shapley_values.values())
+                        else:
+                            all_values = list(shapley_values)
+                        token_shap_value = float(np.mean(all_values))
+                except Exception as e:
+                    print(f"[WARN] Could not extract SHAP value for token '{token}': {e}")
+                    if debug:
+                        import traceback
+                        traceback.print_exc()
+            
             # Create overlay for this token
             token_overlay_path = os.path.join(out_dir, f"overlay_token_{token}.png")
             pixel_shap.visualize(
@@ -570,6 +608,7 @@ def run_pixelshap_for_tokens(
                 "token": token,
                 "answer": perturbed_answer if perturbed_answer else baseline_output,
                 "similarity_diff": float(similarity_diff) if similarity_diff is not None else None,
+                "shap_value": token_shap_value,  # SHAP value for this token
                 "manipulated_image": manipulated_image_path,
             })
             
