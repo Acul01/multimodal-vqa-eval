@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import argparse
 import torch
 from transformers import AutoProcessor, LlavaForConditionalGeneration
 
@@ -11,6 +12,15 @@ from utils.pixelshap_setup import build_segmentation_model, build_manipulator
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Run PixelSHAP analysis on VQA tasks")
+    parser.add_argument(
+        "--shap_base",
+        type=str,
+        choices=["token", "word"],
+        default="token",
+        help="Base unit for text_prompt: 'token' uses tokens from token_entropy_dict, 'word' uses words from the generated answer (both with cleaning and stopword removal)"
+    )
+    args = parser.parse_args()
     project_root = os.path.dirname(os.path.abspath(__file__))
     images_root = os.path.join(project_root, "images")
     nle_root = os.path.join(project_root, "nle_data")
@@ -78,6 +88,7 @@ def main():
         pixel_shap=pixel_shap,
         pixelshap_out_dir=pixelshap_out_dir,
         max_tokens_pixelshap=None,  # None means use all tokens
+        shap_base=args.shap_base,  # "token" or "word"
     )
 
     print(f"Finished SHAP run with {len(results)} samples.")

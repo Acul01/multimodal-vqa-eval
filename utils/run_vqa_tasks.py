@@ -105,17 +105,22 @@ def _build_text_prompt(generated_answer: str) -> str:
     return text_prompt
 
 
-def _build_text_prompt_from_entropy(token_entropy_dict: Dict[str, float]) -> str:
+def _build_text_prompt_from_entropy(
+    token_entropy_dict: Dict[str, float],
+    generated_answer: Optional[str] = None,
+    mode: str = "token",
+) -> str:
     """
-    Build text_prompt from tokens that have entropy values.
-    Only includes tokens for which entropy was calculated.
+    Build text_prompt from tokens that have entropy values or from words in the generated answer.
     Filters out stopwords and punctuation.
     
     Args:
         token_entropy_dict: Dictionary mapping tokens to their entropy values
+        generated_answer: Full generated answer text (used for "word" mode)
+        mode: "token" to use tokens from token_entropy_dict, "word" to use words from generated_answer
     
     Returns:
-        Comma-separated string of unique tokens (only those with entropy, filtered)
+        Comma-separated string of unique tokens/words (filtered)
     """
     # Manual stopword list
     STOPWORDS = {
@@ -130,6 +135,30 @@ def _build_text_prompt_from_entropy(token_entropy_dict: Dict[str, float]) -> str
     
     import re
     
+    if mode == "word":
+        # Extract words from the generated answer
+        if not generated_answer:
+            # Fallback to token mode if no answer provided
+            mode = "token"
+        else:
+            # Extract all alphanumeric words from the answer
+            words = re.findall(r"[A-Za-z0-9]+", generated_answer.lower())
+            # Filter out stopwords and short words
+            filtered_words = [
+                word for word in words
+                if word not in STOPWORDS and len(word) > 1
+            ]
+            # Remove duplicates while preserving order
+            seen = set()
+            unique_words = []
+            for word in filtered_words:
+                if word not in seen:
+                    seen.add(word)
+                    unique_words.append(word)
+            text_prompt = ", ".join(unique_words)
+            return text_prompt
+    
+    # Default: token mode
     # Get all tokens that have entropy values
     tokens = list(token_entropy_dict.keys())
     
@@ -292,12 +321,17 @@ def run_vqa_task(
     pixel_shap=None,
     pixelshap_out_dir: Optional[str] = None,
     max_tokens_pixelshap: Optional[int] = 3,
+    shap_base: str = "token",  # "token" or "word"
 ):
     """
     Unified entry point for VQA-X, ACT-X, ESNLI-VE, VCR (answer+explanation).
     Uses prompting_templates.py for prompts.
     Optionally computes PixelSHAP overlays for explanation tokens.
     If max_tokens_pixelshap is None, uses all tokens from the explanation.
+    
+    Args:
+        shap_base: "token" to use tokens from token_entropy_dict, "word" to use words from generated answer.
+                   Both modes apply cleaning and stopword removal. Default: "token".
     """
     key = TASK_CANON.get(task.replace(" ", "").lower())
     if not key:
@@ -377,8 +411,12 @@ def run_vqa_task(
                 # meta.json with full answer + all tokens with entropy
                 meta_path = os.path.join(img_out_dir, "meta.json")
                 
-                # Build text_prompt from tokens that have entropy (not from full answer)
-                text_prompt = _build_text_prompt_from_entropy(token_entropy_raw)
+                # Build text_prompt from tokens or words based on shap_base parameter
+                text_prompt = _build_text_prompt_from_entropy(
+                    token_entropy_raw,
+                    generated_answer=pred_full,  # Pass full answer for "word" mode
+                    mode=shap_base,  # "token" or "word"
+                )
                 
                 # Filter selected_tokens to only include tokens that are in text_prompt
                 # This ensures consistency between text_prompt and analyzed tokens
