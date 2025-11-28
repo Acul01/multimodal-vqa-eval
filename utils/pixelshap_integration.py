@@ -624,6 +624,7 @@ def run_pixelshap_for_tokens(
         "overall_overlay": overall_overlay_path,
         "token_overlays": token_overlays,
         "token_analyses": token_analyses,
+        "token_entropy_dict": token_entropy_dict,  # Include token entropy dict in return
     }
 
 
