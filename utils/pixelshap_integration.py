@@ -447,9 +447,105 @@ def run_pixelshap_for_tokens(
     # Run baseline first to get baseline output
     baseline_output = pixel_shap.model(image_path, prompt)
     
+    # Get all segments from segmentation model
+    boxes, labels, conf, masks = segmentation_model.segment(image_path)
+    
+    # Create a mapping from token to segments (find segments that match the token)
+    token_to_segments = {}
+    for token in tokens:
+        matching_segments = []
+        for i, label in enumerate(labels):
+            # Check if token appears in label (case-insensitive)
+            if token.lower() in label.lower():
+                matching_segments.append(i)
+        token_to_segments[token] = matching_segments if matching_segments else list(range(len(labels)))  # Fallback: all segments
+    
+    # Create overall overlay once (for all tokens combined)
+    overall_overlay_path = os.path.join(out_dir, "overlay.png")
+    try:
+        # Run PixelSHAP once to get overall overlay
+        results_df_overall, shapley_values_overall = pixel_shap.analyze(
+            image_path=image_path,
+            prompt=prompt,
+            sampling_ratio=sampling_ratio,
+            max_combinations=max_combinations,
+            cleanup_temp_files=False,  # Keep temp files for now
+        )
+        pixel_shap.visualize(
+            background_opacity=0.5,
+            show_original_side_by_side=True,
+            show_labels=False,
+            show_model_output=True,
+            output_path=overall_overlay_path,
+        )
+    except Exception as e:
+        print(f"[WARN] Could not create overall overlay: {e}")
+        overall_overlay_path = None
+    
     for token in tokens:
         try:
-            # Run PixelSHAP analysis
+            # Find segments that match this token
+            token_segments = token_to_segments.get(token, [])
+            
+            # Create manipulated image with this token's segments blacked out
+            manipulated_image_path = None
+            perturbed_answer = None
+            similarity_diff = None
+            
+            if token_segments:
+                try:
+                    # Load original image
+                    original_img = Image.open(image_path).convert("RGB")
+                    img_array = np.array(original_img)
+                    
+                    # Create mask for this token's segments
+                    mask = np.zeros((img_array.shape[0], img_array.shape[1]), dtype=bool)
+                    for seg_idx in token_segments:
+                        if seg_idx < len(masks):
+                            seg_mask = masks[seg_idx]
+                            if seg_mask is not None:
+                                # Resize mask if needed using PIL
+                                if seg_mask.shape != mask.shape:
+                                    from PIL import Image as PILImage
+                                    seg_mask_img = PILImage.fromarray((seg_mask * 255).astype(np.uint8))
+                                    seg_mask_resized = seg_mask_img.resize(
+                                        (mask.shape[1], mask.shape[0]),
+                                        resample=PILImage.NEAREST
+                                    )
+                                    seg_mask_array = np.array(seg_mask_resized) / 255.0
+                                    mask = mask | (seg_mask_array > 0.5)
+                                else:
+                                    mask = mask | (seg_mask > 0.5)
+                    
+                    # Apply mask (blackout)
+                    img_array[mask] = 0
+                    manipulated_img = Image.fromarray(img_array)
+                    
+                    # Save manipulated image
+                    manipulated_image_path = os.path.join(out_dir, f"manipulated_token_{token}.png")
+                    manipulated_img.save(manipulated_image_path)
+                    
+                    # Run VLM with manipulated image to get perturbed answer
+                    perturbed_answer = pixel_shap.model(manipulated_image_path, prompt)
+                    
+                    # Calculate similarity difference
+                    if perturbed_answer:
+                        perturbed_embedding = vectorizer.vectorize(perturbed_answer)
+                        similarity = vectorizer.calculate_similarity(
+                            baseline_embedding,
+                            perturbed_embedding
+                        )
+                        if len(similarity) > 0:
+                            similarity_value = float(similarity[0])
+                            similarity_diff = 1.0 - similarity_value  # Difference from baseline
+                
+                except Exception as e:
+                    print(f"[WARN] Could not create manipulated image for token '{token}': {e}")
+                    if debug:
+                        import traceback
+                        traceback.print_exc()
+            
+            # Run PixelSHAP analysis for overlay (this creates the heatmap)
             results_df, shapley_values = pixel_shap.analyze(
                 image_path=image_path,
                 prompt=prompt,  # Just the question
@@ -457,44 +553,6 @@ def run_pixelshap_for_tokens(
                 max_combinations=max_combinations,
                 cleanup_temp_files=True,
             )
-            
-            # Get perturbed answer from results_df
-            # PixelSHAP should store model outputs in results_df
-            perturbed_answer = None
-            if results_df is not None and len(results_df) > 0:
-                # Try to get model output from results_df
-                # The column name might vary, try common names
-                for col in ['model_output', 'output', 'text', 'answer']:
-                    if col in results_df.columns:
-                        # Use the last output or average
-                        outputs = results_df[col].dropna().tolist()
-                        if outputs:
-                            perturbed_answer = outputs[-1]  # Use last output
-                            break
-                
-                # If we still don't have it, try to get from the analyze method's internal state
-                # This is a fallback - may need adjustment based on actual PixelSHAP implementation
-                if perturbed_answer is None:
-                    # Run VLM with a manipulated image to get perturbed answer
-                    # This is a workaround - ideally PixelSHAP would return this
-                    try:
-                        # Get a sample manipulated image from temp_dir
-                        # This is a simplified approach
-                        perturbed_answer = baseline_output  # Fallback to baseline
-                    except:
-                        perturbed_answer = baseline_output
-            
-            # Calculate similarity difference
-            similarity_diff = None
-            if perturbed_answer and perturbed_answer != baseline_output:
-                perturbed_embedding = vectorizer.vectorize(perturbed_answer)
-                similarity = vectorizer.calculate_similarity(
-                    baseline_embedding,
-                    perturbed_embedding
-                )
-                if len(similarity) > 0:
-                    similarity_value = float(similarity[0])
-                    similarity_diff = 1.0 - similarity_value  # Difference from baseline
             
             # Create overlay for this token
             token_overlay_path = os.path.join(out_dir, f"overlay_token_{token}.png")
@@ -511,7 +569,8 @@ def run_pixelshap_for_tokens(
             token_analyses.append({
                 "token": token,
                 "answer": perturbed_answer if perturbed_answer else baseline_output,
-                "similarity_diff": similarity_diff,
+                "similarity_diff": float(similarity_diff) if similarity_diff is not None else None,
+                "manipulated_image": manipulated_image_path,
             })
             
         except Exception as e:
@@ -523,6 +582,7 @@ def run_pixelshap_for_tokens(
     
     return {
         "segmentation_overlay": seg_overlay_path,
+        "overall_overlay": overall_overlay_path,
         "token_overlays": token_overlays,
         "token_analyses": token_analyses,
     }

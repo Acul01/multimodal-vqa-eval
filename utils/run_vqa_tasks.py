@@ -109,20 +109,44 @@ def _build_text_prompt_from_entropy(token_entropy_dict: Dict[str, float]) -> str
     """
     Build text_prompt from tokens that have entropy values.
     Only includes tokens for which entropy was calculated.
+    Filters out stopwords and punctuation.
     
     Args:
         token_entropy_dict: Dictionary mapping tokens to their entropy values
     
     Returns:
-        Comma-separated string of unique tokens (only those with entropy)
+        Comma-separated string of unique tokens (only those with entropy, filtered)
     """
+    # Manual stopword list
+    STOPWORDS = {
+        "the", "a", "an", "of", "in", "on", "is", "are",
+        "to", "and", "or", "because", "that", "this", "it",
+        "they", "he", "she", "we", "you", "i", "them",
+        "his", "her", "their", "there", "here", "be", "been",
+        "have", "has", "had", "do", "does", "did", "will",
+        "would", "could", "should", "may", "might", "must",
+        "can", "cannot", "not", "no", "yes", "if", "then",
+    }
+    
+    import re
+    
     # Get all tokens that have entropy values
     tokens = list(token_entropy_dict.keys())
+    
+    # Filter out stopwords and punctuation-only tokens
+    filtered_tokens = []
+    for token in tokens:
+        # Remove punctuation and check if token is meaningful
+        clean_token = re.sub(r'[^\w\s]', '', token.lower().strip())
+        
+        # Skip if empty, is a stopword, or is only punctuation
+        if clean_token and clean_token not in STOPWORDS and len(clean_token) > 1:
+            filtered_tokens.append(clean_token)
     
     # Remove duplicates while preserving order
     seen = set()
     unique_tokens = []
-    for token in tokens:
+    for token in filtered_tokens:
         if token not in seen:
             seen.add(token)
             unique_tokens.append(token)
@@ -398,6 +422,7 @@ def run_vqa_task(
                         pixelshap_paths = analysis_results.get("token_overlays", [])
                         token_analyses_data = analysis_results.get("token_analyses", [])
                         segmentation_overlay = analysis_results.get("segmentation_overlay")
+                        overall_overlay = analysis_results.get("overall_overlay")
                         
                     except Exception as e:
                         print(
@@ -406,6 +431,9 @@ def run_vqa_task(
                         )
                         import traceback
                         traceback.print_exc()
+                        token_analyses_data = []
+                        segmentation_overlay = None
+                        overall_overlay = None
                 
                 # Build meta.json with required fields
                 meta = {
@@ -414,12 +442,14 @@ def run_vqa_task(
                     "baseline_answer": pred_full,
                     "token_entropy_dict": token_entropy_raw,
                     "text_prompt": text_prompt,
-                    "token_analyses": token_analyses_data,  # List of {token, answer, similarity_diff}
+                    "token_analyses": token_analyses_data,  # List of {token, answer, similarity_diff, manipulated_image}
                 }
                 
-                # Add segmentation overlay path if available
-                if 'segmentation_overlay' in locals() and segmentation_overlay:
+                # Add overlay paths if available
+                if segmentation_overlay:
                     meta["segmentation_overlay"] = segmentation_overlay
+                if overall_overlay:
+                    meta["overall_overlay"] = overall_overlay
                 
                 try:
                     import json
