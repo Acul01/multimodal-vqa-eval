@@ -8,6 +8,7 @@ from typing import Optional, Any, List, Dict
 import torch
 from PIL import Image
 import numpy as np
+import pandas as pd
 
 from sentence_transformers import SentenceTransformer
 
@@ -336,7 +337,7 @@ def run_pixelshap_for_tokens(
     max_combinations: int = 20,
     vectorizer: Optional[Any] = None,
     temp_dir: str = "pixelshap_tmp",
-    debug: bool = False,
+    debug: bool = True,  # Enable by default to diagnose SHAP value extraction issues
 ) -> Dict[str, Any]:
     """
     Run PixelSHAP for multiple tokens and save overlays.
@@ -479,6 +480,20 @@ def run_pixelshap_for_tokens(
             max_combinations=max_combinations,
             cleanup_temp_files=False,  # Keep temp files for now
         )
+        if debug:
+            print(f"[DEBUG] PixelSHAP analyze() returned:")
+            print(f"[DEBUG]   results_df_global type: {type(results_df_global)}")
+            print(f"[DEBUG]   shapley_values_global type: {type(shapley_values_global)}")
+            if results_df_global is not None:
+                print(f"[DEBUG]   results_df_global shape: {results_df_global.shape if hasattr(results_df_global, 'shape') else 'N/A'}")
+                print(f"[DEBUG]   results_df_global columns: {list(results_df_global.columns) if hasattr(results_df_global, 'columns') else 'N/A'}")
+            if shapley_values_global is not None:
+                if isinstance(shapley_values_global, dict):
+                    print(f"[DEBUG]   shapley_values_global keys (first 10): {list(shapley_values_global.keys())[:10]}")
+                    print(f"[DEBUG]   shapley_values_global values (first 5): {list(shapley_values_global.values())[:5]}")
+                elif isinstance(shapley_values_global, (list, np.ndarray)):
+                    print(f"[DEBUG]   shapley_values_global length: {len(shapley_values_global)}")
+                    print(f"[DEBUG]   shapley_values_global (first 5): {shapley_values_global[:5] if len(shapley_values_global) > 0 else 'empty'}")
     except Exception as e:
         print(f"[WARN] Could not run global PixelSHAP analysis: {e}")
         if debug:
@@ -569,40 +584,73 @@ def run_pixelshap_for_tokens(
             
             # Extract SHAP value for this token's segments
             token_shap_value = None
-            if shapley_values is not None and token_segments:
+            if token_segments:
                 try:
-                    # shapley_values is typically a dict or array mapping segment indices to SHAP values
-                    # Get SHAP values for segments that belong to this token
+                    # First, try to get SHAP values from shapley_values_global
                     token_segment_shap_values = []
                     
                     if debug:
                         print(f"[DEBUG] Token '{token}': token_segments={token_segments}")
+                        print(f"[DEBUG] Number of boxes: {len(boxes)}")
                         print(f"[DEBUG] shapley_values type: {type(shapley_values)}")
-                        if isinstance(shapley_values, dict):
-                            print(f"[DEBUG] shapley_values keys: {list(shapley_values.keys())[:10]}")
-                        elif isinstance(shapley_values, (list, np.ndarray)):
-                            print(f"[DEBUG] shapley_values length: {len(shapley_values)}")
                     
-                    if isinstance(shapley_values, dict):
-                        # If it's a dict, keys might be segment indices or segment IDs
-                        for seg_idx in token_segments:
-                            if seg_idx in shapley_values:
-                                token_segment_shap_values.append(shapley_values[seg_idx])
-                            # Also try string keys
-                            elif str(seg_idx) in shapley_values:
-                                token_segment_shap_values.append(shapley_values[str(seg_idx)])
-                            # Try tuple keys (some implementations use (x1, y1, x2, y2) as keys)
-                            elif isinstance(seg_idx, int) and seg_idx < len(boxes):
-                                # Try to find by box coordinates
-                                box = boxes[seg_idx]
-                                box_key = tuple(box) if isinstance(box, (list, np.ndarray)) else box
-                                if box_key in shapley_values:
-                                    token_segment_shap_values.append(shapley_values[box_key])
-                    elif isinstance(shapley_values, (list, np.ndarray)):
-                        # If it's a list/array, indices correspond to segment order
-                        for seg_idx in token_segments:
-                            if isinstance(seg_idx, int) and seg_idx < len(shapley_values):
-                                token_segment_shap_values.append(shapley_values[seg_idx])
+                    # Try to extract from shapley_values_global if available
+                    if shapley_values is not None:
+                        if isinstance(shapley_values, dict):
+                            if debug:
+                                print(f"[DEBUG] shapley_values dict keys (first 10): {list(shapley_values.keys())[:10]}")
+                            # If it's a dict, keys might be segment indices or segment IDs
+                            for seg_idx in token_segments:
+                                if seg_idx in shapley_values:
+                                    val = shapley_values[seg_idx]
+                                    if val is not None:
+                                        token_segment_shap_values.append(float(val))
+                                # Also try string keys
+                                elif str(seg_idx) in shapley_values:
+                                    val = shapley_values[str(seg_idx)]
+                                    if val is not None:
+                                        token_segment_shap_values.append(float(val))
+                                # Try tuple keys (some implementations use (x1, y1, x2, y2) as keys)
+                                elif isinstance(seg_idx, int) and seg_idx < len(boxes):
+                                    # Try to find by box coordinates
+                                    box = boxes[seg_idx]
+                                    if box is not None:
+                                        box_key = tuple(box) if isinstance(box, (list, np.ndarray)) else box
+                                        if box_key in shapley_values:
+                                            val = shapley_values[box_key]
+                                            if val is not None:
+                                                token_segment_shap_values.append(float(val))
+                        elif isinstance(shapley_values, (list, np.ndarray)):
+                            if debug:
+                                print(f"[DEBUG] shapley_values array length: {len(shapley_values)}")
+                            # If it's a list/array, indices correspond to segment order
+                            for seg_idx in token_segments:
+                                if isinstance(seg_idx, int) and seg_idx < len(shapley_values):
+                                    val = shapley_values[seg_idx]
+                                    if val is not None:
+                                        token_segment_shap_values.append(float(val))
+                    
+                    # If no values found from shapley_values_global, try to extract from results_df_global
+                    if not token_segment_shap_values and results_df_global is not None:
+                        if debug:
+                            print(f"[DEBUG] Trying to extract SHAP values from results_df_global")
+                            print(f"[DEBUG] results_df_global columns: {list(results_df_global.columns) if hasattr(results_df_global, 'columns') else 'N/A'}")
+                        
+                        # Check if results_df has a 'shapley_value' or 'shap_value' column
+                        if isinstance(results_df_global, pd.DataFrame):
+                            shap_col = None
+                            for col in ['shapley_value', 'shap_value', 'shap', 'value']:
+                                if col in results_df_global.columns:
+                                    shap_col = col
+                                    break
+                            
+                            if shap_col:
+                                # Try to match segments by index
+                                for seg_idx in token_segments:
+                                    if isinstance(seg_idx, int) and seg_idx < len(results_df_global):
+                                        val = results_df_global.iloc[seg_idx][shap_col]
+                                        if pd.notna(val):
+                                            token_segment_shap_values.append(float(val))
                     
                     if debug:
                         print(f"[DEBUG] Token '{token}': found {len(token_segment_shap_values)} SHAP values: {token_segment_shap_values}")
@@ -619,6 +667,8 @@ def run_pixelshap_for_tokens(
                             print(f"[DEBUG] Available segment indices: {list(range(len(boxes)))}")
                             if isinstance(shapley_values, dict):
                                 print(f"[DEBUG] Available SHAP keys: {list(shapley_values.keys())[:10]}")
+                            elif shapley_values is None:
+                                print(f"[DEBUG] shapley_values_global is None!")
                         # Don't use fallback - leave as None to indicate no match
                         token_shap_value = None
                 except Exception as e:
@@ -626,6 +676,9 @@ def run_pixelshap_for_tokens(
                     if debug:
                         import traceback
                         traceback.print_exc()
+            else:
+                if debug:
+                    print(f"[DEBUG] Token '{token}': No segments matched, cannot extract SHAP value")
             
             # Create overlay for this token (reuse global SHAP values but visualize)
             # Note: We could also create token-specific visualizations if needed
