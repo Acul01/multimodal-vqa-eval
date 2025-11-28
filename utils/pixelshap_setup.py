@@ -16,12 +16,12 @@ def build_segmentation_model(generated_answer: str, device: str = "cuda"):
     This follows the PixelSHAP example: DinoSam2SegmentationModel
     wraps GroundingDINO + SAM2.
 
-    The 'text_prompt' is created from the complete generated answer.
-    Tokens are extracted from the answer and joined by commas to form
-    a search query for object/concept detection.
+    The 'text_prompt' can be either:
+    - A complete generated answer string (e.g., "<answer> because <explanation>") - tokens will be extracted
+    - A comma-separated string of tokens (e.g., "red, car, is") - used directly
 
     Args:
-        generated_answer: Complete generated answer string (e.g., "<answer> because <explanation>")
+        generated_answer: Either complete answer string or comma-separated tokens
         device: Device to run the model on (default: "cuda")
     
     Returns:
@@ -29,23 +29,28 @@ def build_segmentation_model(generated_answer: str, device: str = "cuda"):
     """
     import re
     
-    # Extract all alphanumeric tokens from the complete answer
-    # This includes tokens from both the answer and explanation parts
-    tokens = re.findall(r"[A-Za-z0-9]+", generated_answer)
-    
-    # Filter out empty tokens and convert to lowercase
-    filtered_tokens = [t.lower().strip() for t in tokens if t and t.strip()]
-    
-    # Remove duplicates while preserving order
-    seen = set()
-    unique_tokens = []
-    for token in filtered_tokens:
-        if token not in seen:
-            seen.add(token)
-            unique_tokens.append(token)
-    
-    # Join tokens with commas
-    text_prompt = ", ".join(unique_tokens)
+    # Check if it's already a comma-separated list of tokens
+    # (simple heuristic: if it contains commas and no "because", treat as token list)
+    if "," in generated_answer and "because" not in generated_answer.lower():
+        # Already a comma-separated token list
+        text_prompt = generated_answer
+    else:
+        # Extract tokens from complete answer
+        tokens = re.findall(r"[A-Za-z0-9]+", generated_answer)
+        
+        # Filter out empty tokens and convert to lowercase
+        filtered_tokens = [t.lower().strip() for t in tokens if t and t.strip()]
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_tokens = []
+        for token in filtered_tokens:
+            if token not in seen:
+                seen.add(token)
+                unique_tokens.append(token)
+        
+        # Join tokens with commas
+        text_prompt = ", ".join(unique_tokens)
     
     print(f"Text prompt: {text_prompt}")
 

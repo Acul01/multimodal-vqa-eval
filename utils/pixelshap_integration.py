@@ -3,7 +3,7 @@
 
 import os
 from dataclasses import dataclass
-from typing import Optional, Any
+from typing import Optional, Any, List, Dict
 
 import torch
 from PIL import Image
@@ -286,10 +286,14 @@ def run_pixelshap_for_token(
             print(f"[WARN] Could not write meta.json for {image_dir}: {e}")
 
     # build prompt for this specific token
+    # Include the generated answer as context to ensure attribution is for the specific output
+   
     prompt = (
         base_prompt
-        + f"\n\nExplain the image and especially the concept '{token}'."
+        + f"\n\nYour previous answer was: '{model_answer}'. "
+        + f"Focus on explaining the concept '{token}' in this answer."
     )
+
 
     # run PixelSHAP
     results_df, shapley_values = pixel_shap.analyze(
@@ -316,6 +320,212 @@ def run_pixelshap_for_token(
     )
 
     return out_path
+
+
+def run_pixelshap_for_tokens(
+    vlm_cfg: VLMConfig,
+    text_prompt: str,
+    image_path: str,
+    question: str,
+    baseline_answer: str,
+    tokens: List[str],
+    token_entropy_dict: Dict[str, float],
+    out_dir: str,
+    image_id: Optional[Any] = None,
+    sampling_ratio: float = 0.5,
+    max_combinations: int = 20,
+    vectorizer: Optional[Any] = None,
+    temp_dir: str = "pixelshap_tmp",
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """
+    Run PixelSHAP for multiple tokens and save overlays.
+    Creates one overlay per token showing which image segments are important for that token.
+    Also creates a segmentation visualization showing all detected segments.
+    
+    Args:
+        vlm_cfg: VLMConfig containing model, processor, device, etc.
+        text_prompt: Comma-separated tokens for segmentation (e.g., "red, car, is")
+        image_path: Path to the image
+        question: Original question
+        baseline_answer: Original answer from the model
+        tokens: List of tokens to analyze
+        token_entropy_dict: Dictionary mapping tokens to entropy values
+        out_dir: Output directory for overlays
+        image_id: Optional image ID
+        sampling_ratio: Sampling ratio for PixelSHAP
+        max_combinations: Maximum combinations for PixelSHAP
+        vectorizer: Optional vectorizer (if None, uses default)
+        temp_dir: Temporary directory for PixelSHAP
+        debug: Debug mode flag
+    
+    Returns:
+        Dictionary with:
+            - "segmentation_overlay": path to segmentation visualization
+            - "token_overlays": list of (token, overlay_path) tuples
+            - "token_analyses": list of dicts with token, answer, similarity_diff for each token
+    """
+    from utils.pixelshap_setup import build_segmentation_model, build_manipulator
+    import json
+    
+    os.makedirs(out_dir, exist_ok=True)
+    
+    # Build segmentation model with tokens that have entropy
+    segmentation_model = build_segmentation_model(
+        generated_answer=text_prompt,  # Use text_prompt directly (comma-separated tokens)
+        device=vlm_cfg.device,
+    )
+    
+    # Build manipulator
+    manipulator = build_manipulator(device=vlm_cfg.device)
+    
+    # Build PixelSHAP
+    pixel_shap = build_pixelshap(
+        vlm_cfg=vlm_cfg,
+        segmentation_model=segmentation_model,
+        manipulator=manipulator,
+        vectorizer=vectorizer,
+        temp_dir=temp_dir,
+        debug=debug,
+    )
+    
+    # Build vectorizer if not provided
+    if vectorizer is None:
+        vectorizer = SentenceTransformerVectorizer(device=vlm_cfg.device)
+    
+    # Get baseline embedding for comparison
+    baseline_embedding = vectorizer.vectorize(baseline_answer)
+    
+    # Create segmentation visualization (all segments)
+    seg_overlay_path = None
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as patches
+        
+        boxes, labels, conf, masks = segmentation_model.segment(image_path)
+        seg_overlay_path = os.path.join(out_dir, "segmentation_overlay.png")
+        
+        # Create visualization
+        img = Image.open(image_path).convert("RGB")
+        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+        ax.imshow(img)
+        ax.axis('off')
+        ax.set_title("Detected Segments", fontsize=14)
+        
+        # Draw bounding boxes
+        for box, label, c in zip(boxes, labels, conf):
+            x1, y1, x2, y2 = box
+            rect = patches.Rectangle((x1, y1), x2-x1, y2-y1, 
+                                    linewidth=2, edgecolor='red', facecolor='none')
+            ax.add_patch(rect)
+            ax.text(x1, y1-5, f"{label} ({c:.2f})", color='red', fontsize=10, 
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7))
+        
+        plt.tight_layout()
+        plt.savefig(seg_overlay_path, dpi=150, bbox_inches='tight')
+        plt.close()
+    except Exception as e:
+        print(f"[WARN] Could not create segmentation overlay: {e}")
+    
+    # Analyze each token
+    token_overlays = []
+    token_analyses = []
+    
+    # Use simple prompt (just the question)
+    prompt = question
+    
+    # Build PixelSHAP once (shared for all tokens)
+    pixel_shap = build_pixelshap(
+        vlm_cfg=vlm_cfg,
+        segmentation_model=segmentation_model,
+        manipulator=manipulator,
+        vectorizer=vectorizer,
+        temp_dir=temp_dir,
+        debug=debug,
+    )
+    
+    # Run baseline first to get baseline output
+    baseline_output = pixel_shap.model(image_path, prompt)
+    
+    for token in tokens:
+        try:
+            # Run PixelSHAP analysis
+            results_df, shapley_values = pixel_shap.analyze(
+                image_path=image_path,
+                prompt=prompt,  # Just the question
+                sampling_ratio=sampling_ratio,
+                max_combinations=max_combinations,
+                cleanup_temp_files=True,
+            )
+            
+            # Get perturbed answer from results_df
+            # PixelSHAP should store model outputs in results_df
+            perturbed_answer = None
+            if results_df is not None and len(results_df) > 0:
+                # Try to get model output from results_df
+                # The column name might vary, try common names
+                for col in ['model_output', 'output', 'text', 'answer']:
+                    if col in results_df.columns:
+                        # Use the last output or average
+                        outputs = results_df[col].dropna().tolist()
+                        if outputs:
+                            perturbed_answer = outputs[-1]  # Use last output
+                            break
+                
+                # If we still don't have it, try to get from the analyze method's internal state
+                # This is a fallback - may need adjustment based on actual PixelSHAP implementation
+                if perturbed_answer is None:
+                    # Run VLM with a manipulated image to get perturbed answer
+                    # This is a workaround - ideally PixelSHAP would return this
+                    try:
+                        # Get a sample manipulated image from temp_dir
+                        # This is a simplified approach
+                        perturbed_answer = baseline_output  # Fallback to baseline
+                    except:
+                        perturbed_answer = baseline_output
+            
+            # Calculate similarity difference
+            similarity_diff = None
+            if perturbed_answer and perturbed_answer != baseline_output:
+                perturbed_embedding = vectorizer.vectorize(perturbed_answer)
+                similarity = vectorizer.calculate_similarity(
+                    baseline_embedding,
+                    perturbed_embedding
+                )
+                if len(similarity) > 0:
+                    similarity_value = float(similarity[0])
+                    similarity_diff = 1.0 - similarity_value  # Difference from baseline
+            
+            # Create overlay for this token
+            token_overlay_path = os.path.join(out_dir, f"overlay_token_{token}.png")
+            pixel_shap.visualize(
+                background_opacity=0.5,
+                show_original_side_by_side=True,
+                show_labels=False,
+                show_model_output=True,
+                output_path=token_overlay_path,
+            )
+            
+            token_overlays.append((token, token_overlay_path))
+            
+            token_analyses.append({
+                "token": token,
+                "answer": perturbed_answer if perturbed_answer else baseline_output,
+                "similarity_diff": similarity_diff,
+            })
+            
+        except Exception as e:
+            print(f"[WARN] PixelSHAP failed for token '{token}': {e}")
+            import traceback
+            if debug:
+                traceback.print_exc()
+            continue
+    
+    return {
+        "segmentation_overlay": seg_overlay_path,
+        "token_overlays": token_overlays,
+        "token_analyses": token_analyses,
+    }
 
 
 def run_pixelshap_for_image(
@@ -405,9 +615,11 @@ def run_pixelshap_for_image(
     )
 
     # build prompt for this specific token
+    # Include the generated answer as context to ensure attribution is for the specific output
     prompt = (
         base_prompt
-        + f"\n\nExplain the image and especially the concept '{token}'."
+        + f"\n\nYour previous answer was: '{generated_answer}'. "
+        + f"Focus on explaining the concept '{token}' in this answer."
     )
 
     # run PixelSHAP

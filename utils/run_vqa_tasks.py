@@ -105,6 +105,33 @@ def _build_text_prompt(generated_answer: str) -> str:
     return text_prompt
 
 
+def _build_text_prompt_from_entropy(token_entropy_dict: Dict[str, float]) -> str:
+    """
+    Build text_prompt from tokens that have entropy values.
+    Only includes tokens for which entropy was calculated.
+    
+    Args:
+        token_entropy_dict: Dictionary mapping tokens to their entropy values
+    
+    Returns:
+        Comma-separated string of unique tokens (only those with entropy)
+    """
+    # Get all tokens that have entropy values
+    tokens = list(token_entropy_dict.keys())
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_tokens = []
+    for token in tokens:
+        if token not in seen:
+            seen.add(token)
+            unique_tokens.append(token)
+    
+    # Join tokens with commas
+    text_prompt = ", ".join(unique_tokens)
+    return text_prompt
+
+
 def _is_qwen_model(model) -> bool:
     return model.__class__.__name__.startswith("Qwen3VLForConditionalGeneration")
 
@@ -326,75 +353,80 @@ def run_vqa_task(
                 # meta.json with full answer + all tokens with entropy
                 meta_path = os.path.join(img_out_dir, "meta.json")
                 
-                # Build text_prompt (same as used in build_segmentation_model)
-                text_prompt = _build_text_prompt(pred_full)
+                # Build text_prompt from tokens that have entropy (not from full answer)
+                text_prompt = _build_text_prompt_from_entropy(token_entropy_raw)
                 
-                # Get ground truth explanation
-                gt_explanation = getattr(s, "explanation", None) or ""
+                # Determine device from model
+                device = next(model.parameters()).device
+                device_str = "cuda" if device.type == "cuda" else "cpu"
                 
+                # Create VLMConfig for PixelSHAP
+                vlm_cfg = VLMConfig(
+                    model=model,
+                    processor=processor,
+                    device=device_str,
+                    max_new_tokens=40,
+                    task=task,
+                )
+                
+                # Get temp_dir from pixel_shap if available, otherwise use default
+                temp_dir = getattr(pixel_shap, 'temp_dir', 'pixelshap_tmp') if pixel_shap else 'pixelshap_tmp'
+                
+                # Run PixelSHAP analysis for all selected tokens
+                pixelshap_paths = []
+                token_analyses_data = []
+                
+                if selected_tokens:
+                    try:
+                        from utils.pixelshap_integration import run_pixelshap_for_tokens
+                        
+                        # Run analysis for all tokens
+                        analysis_results = run_pixelshap_for_tokens(
+                            vlm_cfg=vlm_cfg,
+                            text_prompt=text_prompt,
+                            image_path=s.image_path,
+                            question=s.question,
+                            baseline_answer=pred_full,  # Use full answer as baseline
+                            tokens=selected_tokens,
+                            token_entropy_dict=token_entropy_raw,
+                            out_dir=img_out_dir,
+                            image_id=img_id,
+                            temp_dir=temp_dir,
+                        )
+                        
+                        # Extract results
+                        pixelshap_paths = analysis_results.get("token_overlays", [])
+                        token_analyses_data = analysis_results.get("token_analyses", [])
+                        segmentation_overlay = analysis_results.get("segmentation_overlay")
+                        
+                    except Exception as e:
+                        print(
+                            f"[WARN] PixelSHAP failed for sample {sample_idx}, "
+                            f"image {s.image_path}: {e}"
+                        )
+                        import traceback
+                        traceback.print_exc()
+                
+                # Build meta.json with required fields
                 meta = {
-                    "sample_index": sample_idx,
-                    "image_path": s.image_path,
                     "image_id": img_id,
                     "question": s.question,
-                    "generated_text": raw_pred,  # kompletter vom Modell generierter Text (vor Postprocessing)
-                    "generated_answer": pred_only,  # Antwortteil des generierten Textes
-                    "generated_explanation": expl,  # Erklärungsteil des generierten Textes
-                    "gt_answer": gt,
-                    "gt_explanation": gt_explanation,
-                    "text_prompt": text_prompt,  # text_prompt der in build_segmentation_model übergeben wird
-                    "token_entropy": token_entropy_raw,  # all tokens with entropy values (complete answer)
+                    "baseline_answer": pred_full,
+                    "token_entropy_dict": token_entropy_raw,
+                    "text_prompt": text_prompt,
+                    "token_analyses": token_analyses_data,  # List of {token, answer, similarity_diff}
                 }
+                
+                # Add segmentation overlay path if available
+                if 'segmentation_overlay' in locals() and segmentation_overlay:
+                    meta["segmentation_overlay"] = segmentation_overlay
+                
                 try:
                     import json
                     with open(meta_path, "w", encoding="utf-8") as f:
                         json.dump(meta, f, indent=2, ensure_ascii=False)
                 except Exception as e:
                     print(f"[WARN] Could not write meta.json: {e}")
-        
-                # Create one overlay per image using the most important token (highest entropy)
-                # This represents the overall explanation for the image
-                pixelshap_paths = []
-                if selected_tokens:
-                    # Use the token with highest entropy for the overlay
-                    most_important_token = selected_tokens[0]
-                    try:
-                        # Determine device from model
-                        device = next(model.parameters()).device
-                        device_str = "cuda" if device.type == "cuda" else "cpu"
-                        
-                        # Create VLMConfig for PixelSHAP
-                        vlm_cfg = VLMConfig(
-                            model=model,
-                            processor=processor,
-                            device=device_str,
-                            max_new_tokens=40,
-                            task=task,
-                        )
-                        
-                        # Get temp_dir from pixel_shap if available, otherwise use default
-                        temp_dir = getattr(pixel_shap, 'temp_dir', 'pixelshap_tmp') if pixel_shap else 'pixelshap_tmp'
-                        
-                        # Pass complete generated answer to build_segmentation_model
-                        out_path = run_pixelshap_for_image(
-                            vlm_cfg=vlm_cfg,
-                            generated_answer=pred_full,  # complete answer: "<answer> because <explanation>"
-                            image_path=s.image_path,
-                            base_prompt=base_prompt_for_pixelshap,
-                            token=most_important_token,
-                            out_dir=img_out_dir,
-                            image_id=img_id,
-                            question=s.question,
-                            model_answer=pred_full,
-                            gt_answer=gt,
-                            temp_dir=temp_dir,
-                        )
-                        pixelshap_paths.append((most_important_token, out_path))
-                    except Exception as e:
-                        print(
-                            f"[WARN] PixelSHAP failed for sample {sample_idx}, "
-                            f"image {s.image_path}, token '{most_important_token}': {e}"
-                        )
                 
         elif task == "ACT-X":
             gt = s.label
