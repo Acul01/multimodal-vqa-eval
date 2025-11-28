@@ -380,6 +380,15 @@ def run_vqa_task(
                 # Build text_prompt from tokens that have entropy (not from full answer)
                 text_prompt = _build_text_prompt_from_entropy(token_entropy_raw)
                 
+                # Filter selected_tokens to only include tokens that are in text_prompt
+                # This ensures consistency between text_prompt and analyzed tokens
+                text_prompt_tokens = [t.strip() for t in text_prompt.split(", ")]
+                filtered_selected_tokens = [t for t in selected_tokens if t.lower() in [tp.lower() for tp in text_prompt_tokens]]
+                
+                # If no tokens match, use all selected_tokens (fallback)
+                if not filtered_selected_tokens:
+                    filtered_selected_tokens = selected_tokens
+                
                 # Determine device from model
                 device = next(model.parameters()).device
                 device_str = "cuda" if device.type == "cuda" else "cpu"
@@ -400,18 +409,18 @@ def run_vqa_task(
                 pixelshap_paths = []
                 token_analyses_data = []
                 
-                if selected_tokens:
+                if filtered_selected_tokens:
                     try:
                         from utils.pixelshap_integration import run_pixelshap_for_tokens
                         
-                        # Run analysis for all tokens
+                        # Run analysis for filtered tokens (only those in text_prompt)
                         analysis_results = run_pixelshap_for_tokens(
                             vlm_cfg=vlm_cfg,
                             text_prompt=text_prompt,
                             image_path=s.image_path,
                             question=s.question,
                             baseline_answer=pred_full,  # Use full answer as baseline
-                            tokens=selected_tokens,
+                            tokens=filtered_selected_tokens,  # Use filtered tokens
                             token_entropy_dict=token_entropy_raw,
                             out_dir=img_out_dir,
                             image_id=img_id,

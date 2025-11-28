@@ -454,30 +454,48 @@ def run_pixelshap_for_tokens(
     token_to_segments = {}
     for token in tokens:
         matching_segments = []
+        token_lower = token.lower()
         for i, label in enumerate(labels):
             # Check if token appears in label (case-insensitive)
-            if token.lower() in label.lower():
+            # Also check if label is exactly the token (for better matching)
+            label_lower = label.lower() if label else ""
+            if token_lower in label_lower or label_lower == token_lower:
                 matching_segments.append(i)
-        token_to_segments[token] = matching_segments if matching_segments else list(range(len(labels)))  # Fallback: all segments
+        
+        # Only use segments that actually match (no fallback to all segments)
+        token_to_segments[token] = matching_segments
+        
+        if debug:
+            print(f"[DEBUG] Token '{token}': matched segments {matching_segments} from labels {labels}")
     
-    # Create overall overlay once (for all tokens combined)
-    overall_overlay_path = os.path.join(out_dir, "overlay.png")
+    # Run PixelSHAP analysis ONCE for all tokens (to get SHAP values for all segments)
+    # This ensures SHAP values are calculated consistently
+    results_df_global, shapley_values_global = None, None
     try:
-        # Run PixelSHAP once to get overall overlay
-        results_df_overall, shapley_values_overall = pixel_shap.analyze(
+        results_df_global, shapley_values_global = pixel_shap.analyze(
             image_path=image_path,
             prompt=prompt,
             sampling_ratio=sampling_ratio,
             max_combinations=max_combinations,
             cleanup_temp_files=False,  # Keep temp files for now
         )
-        pixel_shap.visualize(
-            background_opacity=0.5,
-            show_original_side_by_side=True,
-            show_labels=False,
-            show_model_output=True,
-            output_path=overall_overlay_path,
-        )
+    except Exception as e:
+        print(f"[WARN] Could not run global PixelSHAP analysis: {e}")
+        if debug:
+            import traceback
+            traceback.print_exc()
+    
+    # Create overall overlay once (for all tokens combined)
+    overall_overlay_path = os.path.join(out_dir, "overlay.png")
+    try:
+        if shapley_values_global is not None:
+            pixel_shap.visualize(
+                background_opacity=0.5,
+                show_original_side_by_side=True,
+                show_labels=False,
+                show_model_output=True,
+                output_path=overall_overlay_path,
+            )
     except Exception as e:
         print(f"[WARN] Could not create overall overlay: {e}")
         overall_overlay_path = None
@@ -545,14 +563,9 @@ def run_pixelshap_for_tokens(
                         import traceback
                         traceback.print_exc()
             
-            # Run PixelSHAP analysis for overlay (this creates the heatmap)
-            results_df, shapley_values = pixel_shap.analyze(
-                image_path=image_path,
-                prompt=prompt,  # Just the question
-                sampling_ratio=sampling_ratio,
-                max_combinations=max_combinations,
-                cleanup_temp_files=True,
-            )
+            # Use global SHAP values (calculated once for all tokens)
+            # This ensures each token gets its specific SHAP value, not the same for all
+            shapley_values = shapley_values_global
             
             # Extract SHAP value for this token's segments
             token_shap_value = None
@@ -562,6 +575,14 @@ def run_pixelshap_for_tokens(
                     # Get SHAP values for segments that belong to this token
                     token_segment_shap_values = []
                     
+                    if debug:
+                        print(f"[DEBUG] Token '{token}': token_segments={token_segments}")
+                        print(f"[DEBUG] shapley_values type: {type(shapley_values)}")
+                        if isinstance(shapley_values, dict):
+                            print(f"[DEBUG] shapley_values keys: {list(shapley_values.keys())[:10]}")
+                        elif isinstance(shapley_values, (list, np.ndarray)):
+                            print(f"[DEBUG] shapley_values length: {len(shapley_values)}")
+                    
                     if isinstance(shapley_values, dict):
                         # If it's a dict, keys might be segment indices or segment IDs
                         for seg_idx in token_segments:
@@ -570,37 +591,59 @@ def run_pixelshap_for_tokens(
                             # Also try string keys
                             elif str(seg_idx) in shapley_values:
                                 token_segment_shap_values.append(shapley_values[str(seg_idx)])
+                            # Try tuple keys (some implementations use (x1, y1, x2, y2) as keys)
+                            elif isinstance(seg_idx, int) and seg_idx < len(boxes):
+                                # Try to find by box coordinates
+                                box = boxes[seg_idx]
+                                box_key = tuple(box) if isinstance(box, (list, np.ndarray)) else box
+                                if box_key in shapley_values:
+                                    token_segment_shap_values.append(shapley_values[box_key])
                     elif isinstance(shapley_values, (list, np.ndarray)):
                         # If it's a list/array, indices correspond to segment order
                         for seg_idx in token_segments:
-                            if seg_idx < len(shapley_values):
+                            if isinstance(seg_idx, int) and seg_idx < len(shapley_values):
                                 token_segment_shap_values.append(shapley_values[seg_idx])
+                    
+                    if debug:
+                        print(f"[DEBUG] Token '{token}': found {len(token_segment_shap_values)} SHAP values: {token_segment_shap_values}")
                     
                     # Aggregate SHAP values (use mean if multiple segments match the token)
                     if token_segment_shap_values:
                         token_shap_value = float(np.mean(token_segment_shap_values))
-                    elif len(shapley_values) > 0:
-                        # Fallback: use mean of all SHAP values if no specific match
-                        if isinstance(shapley_values, dict):
-                            all_values = list(shapley_values.values())
-                        else:
-                            all_values = list(shapley_values)
-                        token_shap_value = float(np.mean(all_values))
+                        if debug:
+                            print(f"[DEBUG] Token '{token}': aggregated SHAP value = {token_shap_value} from {len(token_segment_shap_values)} segments")
+                    else:
+                        # No matching segments found - this is expected if token doesn't match any segment labels
+                        if debug:
+                            print(f"[DEBUG] Token '{token}': No SHAP values found for segments {token_segments}")
+                            print(f"[DEBUG] Available segment indices: {list(range(len(boxes)))}")
+                            if isinstance(shapley_values, dict):
+                                print(f"[DEBUG] Available SHAP keys: {list(shapley_values.keys())[:10]}")
+                        # Don't use fallback - leave as None to indicate no match
+                        token_shap_value = None
                 except Exception as e:
                     print(f"[WARN] Could not extract SHAP value for token '{token}': {e}")
                     if debug:
                         import traceback
                         traceback.print_exc()
             
-            # Create overlay for this token
+            # Create overlay for this token (reuse global SHAP values but visualize)
+            # Note: We could also create token-specific visualizations if needed
             token_overlay_path = os.path.join(out_dir, f"overlay_token_{token}.png")
-            pixel_shap.visualize(
-                background_opacity=0.5,
-                show_original_side_by_side=True,
-                show_labels=False,
-                show_model_output=True,
-                output_path=token_overlay_path,
-            )
+            try:
+                # For token-specific overlay, we could run analyze again with token focus
+                # But for now, we'll use the global visualization
+                # Alternatively, we could create a custom visualization highlighting this token's segments
+                if shapley_values_global is not None:
+                    pixel_shap.visualize(
+                        background_opacity=0.5,
+                        show_original_side_by_side=True,
+                        show_labels=False,
+                        show_model_output=True,
+                        output_path=token_overlay_path,
+                    )
+            except Exception as e:
+                print(f"[WARN] Could not create overlay for token '{token}': {e}")
             
             token_overlays.append((token, token_overlay_path))
             
