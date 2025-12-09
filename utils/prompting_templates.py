@@ -10,6 +10,8 @@ def resolve_shot_count(mode: str) -> int:
         return 1
     if m.startswith("3"):
         return 3
+    if m.startswith("6"):
+        return 6
     return 0  # default: zero-shot
 
 
@@ -53,6 +55,18 @@ VQAX_FEWSHOT = [
         "user": "Question: What color is the bus?",
         "assistant": "yellow because the vehicle is painted bright yellow",
     },
+    {
+        "user": "Question: What is the person holding?",
+        "assistant": "a phone because they are gripping a mobile device in their hand",
+    },
+    {
+        "user": "Question: Is it daytime or nighttime?",
+        "assistant": "daytime because the sky is bright and well-lit",
+    },
+    {
+        "user": "Question: What type of vehicle is shown?",
+        "assistant": "car because the image displays an automobile with four wheels",
+    },
 ]
 
 
@@ -94,6 +108,18 @@ ACTX_FEWSHOT = [
         "user": "Description: Someone stands in a kitchen using pans.",
         "assistant": "cooking because they are working with pans on a stove",
     },
+    {
+        "user": "Description: A person is running on a track.",
+        "assistant": "running because the person is moving quickly on foot",
+    },
+    {
+        "user": "Description: Someone is reading a book while sitting.",
+        "assistant": "reading because the person is looking at an open book",
+    },
+    {
+        "user": "Description: A person is swimming in a pool.",
+        "assistant": "swimming because they are moving through water",
+    },
 ]
 
 
@@ -133,6 +159,18 @@ ESNLIVE_FEWSHOT = [
     {
         "user": "Hypothesis: Someone might be preparing a meal.",
         "assistant": "neutral because the kitchen scene is ambiguous",
+    },
+    {
+        "user": "Hypothesis: There is a dog in the image.",
+        "assistant": "entailment because a canine is clearly visible",
+    },
+    {
+        "user": "Hypothesis: The car is blue.",
+        "assistant": "contradiction because the vehicle is red",
+    },
+    {
+        "user": "Hypothesis: It could be morning or evening.",
+        "assistant": "neutral because the lighting does not clearly indicate the time",
     },
 ]
 
@@ -174,6 +212,18 @@ VCR_FEWSHOT = [
     {
         "user": "Question: What is the child looking at? Options: A) dog B) phone C) bird D) ball",
         "assistant": "B because the child is facing the device in their hands",
+    },
+    {
+        "user": "Question: What color is the car? Options: A) red B) blue C) green D) yellow",
+        "assistant": "A because the vehicle is painted red",
+    },
+    {
+        "user": "Question: How many people are visible? Options: A) one B) two C) three D) four",
+        "assistant": "B because there are two individuals in the scene",
+    },
+    {
+        "user": "Question: Where is the scene taking place? Options: A) indoors B) outdoors C) in a car D) at a beach",
+        "assistant": "B because the environment shows an outdoor setting",
     },
 ]
 

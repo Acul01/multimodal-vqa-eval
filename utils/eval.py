@@ -104,6 +104,7 @@ def evaluate_vqax_to_csv(
     split: str = "val",
     save_dir: str = "results",
     save_name: Optional[str] = None,
+    prompt_mode: Optional[str] = None,
 ) -> str:
     """
     Evaluate VQA-X results where predictions are of the form
@@ -167,7 +168,8 @@ def evaluate_vqax_to_csv(
 
     os.makedirs(save_dir, exist_ok=True)
     if save_name is None:
-        save_name = f"vqax_{split}_eval.csv"
+        prompt_suffix = f"-{prompt_mode}" if prompt_mode else ""
+        save_name = f"vqax_{split}_eval{prompt_suffix}.csv"
     out_path = os.path.join(save_dir, save_name)
     _save_dataframe(df, out_path)
     return out_path
@@ -180,6 +182,7 @@ def evaluate_actx_to_csv(
     split: str = "test",
     save_dir: str = "results",
     save_name: Optional[str] = None,
+    prompt_mode: Optional[str] = None,
 ) -> str:
     """
     Evaluate ACT-X results with "<activity> because <explanation>" predictions.
@@ -244,7 +247,8 @@ def evaluate_actx_to_csv(
 
     os.makedirs(save_dir, exist_ok=True)
     if save_name is None:
-        save_name = f"actx_{split}_eval.csv"
+        prompt_suffix = f"-{prompt_mode}" if prompt_mode else ""
+        save_name = f"actx_{split}_eval{prompt_suffix}.csv"
     out_path = os.path.join(save_dir, save_name)
     _save_dataframe(df, out_path)
     return out_path
@@ -257,6 +261,7 @@ def evaluate_esnlive_to_csv(
     split: str = "test",
     save_dir: str = "results",
     save_name: Optional[str] = None,
+    prompt_mode: Optional[str] = None,
 ) -> str:
     """
     Evaluate e-SNLI-VE results with "<label> because <explanation>" predictions.
@@ -340,7 +345,8 @@ def evaluate_esnlive_to_csv(
 
     os.makedirs(save_dir, exist_ok=True)
     if save_name is None:
-        save_name = f"esnlive_{split}_eval.csv"
+        prompt_suffix = f"-{prompt_mode}" if prompt_mode else ""
+        save_name = f"esnlive_{split}_eval{prompt_suffix}.csv"
     out_path = os.path.join(save_dir, save_name)
     _save_dataframe(df, out_path)
     return out_path
@@ -353,6 +359,7 @@ def evaluate_vcr_to_csv(
     split: str = "val",
     save_dir: str = "results",
     save_name: Optional[str] = None,
+    prompt_mode: Optional[str] = None,
 ) -> str:
     """
     Save VCR results as CSV with:
@@ -491,7 +498,8 @@ def evaluate_vcr_to_csv(
 
     os.makedirs(save_dir, exist_ok=True)
     if save_name is None:
-        save_name = f"vcr_{split}_eval.csv"
+        prompt_suffix = f"-{prompt_mode}" if prompt_mode else ""
+        save_name = f"vcr_{split}_eval{prompt_suffix}.csv"
     out_path = os.path.join(save_dir, save_name)
     _save_dataframe(df, out_path)
     return out_path

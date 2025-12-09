@@ -63,8 +63,8 @@ def parse_args():
         "--prompt_mode",
         type=str,
         default="zero",
-        choices=["zero", "1shot", "3shot"],
-        help="Prompting style when generate_explanations=true: zero / 1shot / 3shot.",
+        choices=["zero", "1shot", "3shot", "6shot"],
+        help="Prompting style when generate_explanations=true: zero / 1shot / 3shot / 6shot.",
     )
     return parser.parse_args()
 
@@ -246,6 +246,7 @@ def main():
                 os.path.join(nle_root, "VQA-X"),
                 split=args.split,
                 save_dir=model_results_dir,
+                prompt_mode=args.prompt_mode,
             )
         elif task_key == "ACT-X":
             out_csv = evaluate_actx_to_csv(
@@ -254,6 +255,7 @@ def main():
                 os.path.join(nle_root, "ACT-X"),
                 split=args.split,
                 save_dir=model_results_dir,
+                prompt_mode=args.prompt_mode,
             )
         elif task_key == "ESNLI-VE":
             out_csv = evaluate_esnlive_to_csv(
@@ -262,6 +264,7 @@ def main():
                 os.path.join(nle_root, "eSNLI-VE"),
                 split=args.split,
                 save_dir=model_results_dir,
+                prompt_mode=args.prompt_mode,
             )
         elif task_key == "VCR":
             out_csv = evaluate_vcr_to_csv(
@@ -270,6 +273,7 @@ def main():
                 os.path.join(nle_root, "VCR"),
                 split=args.split,
                 save_dir=model_results_dir,
+                prompt_mode=args.prompt_mode,
             )
         else:
             out_csv = None
