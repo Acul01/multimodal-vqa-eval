@@ -66,6 +66,12 @@ def parse_args():
         choices=["zero", "1shot", "3shot", "6shot"],
         help="Prompting style when generate_explanations=true: zero / 1shot / 3shot / 6shot.",
     )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=1,
+        help="Batch size for processing (1 = no batching, 2-20 recommended for V100-32GB). Higher = faster but needs more GPU memory.",
+    )
     return parser.parse_args()
 
 
@@ -131,7 +137,7 @@ def main():
     print(
         f"\nRunning task={args.task.upper()} | model={args.model.upper()} "
         f"| split={args.split} | n_samples={args.n_samples} "
-        f"| explanations={gen_expl} | prompt_mode={args.prompt_mode}"
+        f"| explanations={gen_expl} | prompt_mode={args.prompt_mode} | batch_size={args.batch_size}"
     )
 
     project_root = os.path.dirname(os.path.abspath(__file__))
@@ -221,6 +227,7 @@ def main():
             split=args.split,
             n_samples=args.n_samples,
             prompt_mode=args.prompt_mode,
+            batch_size=args.batch_size,
             )
     else:
         # answers only → aktuelle noEx-Version kennt kein prompt_mode
