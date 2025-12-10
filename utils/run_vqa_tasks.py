@@ -402,6 +402,7 @@ def run_vqa_task(
     split: str = "val",
     n_samples: Optional[int] = None,
     prompt_mode: str = "zero",
+    generation_mode: str = "posthoc",
     pixel_shap=None,
     pixelshap_out_dir: Optional[str] = None,
     max_tokens_pixelshap: Optional[int] = 3,
@@ -434,7 +435,7 @@ def run_vqa_task(
     if n_samples:
         dataset = dataset[:n_samples]
 
-    print(f"Running {task} on {len(dataset)} samples with prompt_mode='{prompt_mode}' and batch_size={batch_size}...")
+    print(f"Running {task} on {len(dataset)} samples with prompt_mode='{prompt_mode}', generation_mode='{generation_mode}' and batch_size={batch_size}...")
     
     # Get device from model
     device = next(model.parameters()).device if hasattr(model, 'parameters') else torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -463,16 +464,16 @@ def run_vqa_task(
                 batch_samples.append(s)
                 if task == "VQA-X":
                     batch_gts.append(majority_vqa_answer(s.raw.get("answers")))
-                    batch_conversations.append(prompt_vqax_expl(s.question, prompt_mode))
+                    batch_conversations.append(prompt_vqax_expl(s.question, prompt_mode, generation_mode))
                 elif task == "ACT-X":
                     batch_gts.append(s.label)
-                    batch_conversations.append(prompt_actx_expl(prompt_mode))
+                    batch_conversations.append(prompt_actx_expl(prompt_mode, generation_mode))
                 elif task == "ESNLI-VE":
                     batch_gts.append(s.label)
-                    batch_conversations.append(prompt_esnlive_expl(s.hypothesis, prompt_mode))
+                    batch_conversations.append(prompt_esnlive_expl(s.hypothesis, prompt_mode, generation_mode))
                 elif task == "VCR":
                     batch_gts.append(s.answer or "")
-                    batch_conversations.append(prompt_vcr_expl(s.question or "", s.choices or [], prompt_mode))
+                    batch_conversations.append(prompt_vcr_expl(s.question or "", s.choices or [], prompt_mode, generation_mode))
             
             # Generate answers in batch
             batch_results = generate_answer_batch(
@@ -489,23 +490,23 @@ def run_vqa_task(
                 
                 # Postprocess (same as before)
                 if task == "VQA-X":
-                    result = postprocess_prediction(raw_pred, "VQA-X")
+                    result = postprocess_prediction(raw_pred, "VQA-X", generation_mode=generation_mode)
                     pred_full = result["full_text"]
                     pred_only = result["answer"]
                     expl = result["explanation"]
                 elif task == "ACT-X":
-                    result = postprocess_prediction(raw_pred, "ACT-X")
+                    result = postprocess_prediction(raw_pred, "ACT-X", generation_mode=generation_mode)
                     pred_full = result["full_text"]
                     pred_only = result["answer"]
                     expl = result["explanation"]
                 elif task == "ESNLI-VE":
-                    result = postprocess_prediction(raw_pred, "ESNLI-VE")
+                    result = postprocess_prediction(raw_pred, "ESNLI-VE", generation_mode=generation_mode)
                     pred_full = result["full_text"]
                     pred_only = result["answer"]
                     expl = result["explanation"]
                 elif task == "VCR":
                     choices = s.choices or []
-                    result = postprocess_prediction(raw_pred, "VCR", vcr_choices=choices)
+                    result = postprocess_prediction(raw_pred, "VCR", vcr_choices=choices, generation_mode=generation_mode)
                     pred_full = result["full_text"]
                     pred_only = result["answer"]
                     expl = result["explanation"]
@@ -644,10 +645,10 @@ def run_vqa_task(
 
             if task == "VQA-X":
                 gt = majority_vqa_answer(s.raw.get("answers"))
-                prompt = prompt_vqax_expl(s.question, prompt_mode)
+                prompt = prompt_vqax_expl(s.question, prompt_mode, generation_mode)
                 raw_pred, token_entropy_raw = generate_answer(model, processor, s.image_path, prompt)
 
-                result = postprocess_prediction(raw_pred, "VQA-X")
+                result = postprocess_prediction(raw_pred, "VQA-X", generation_mode=generation_mode)
                 pred_full = result["full_text"]
                 pred_only = result["answer"]
                 expl = result["explanation"]
@@ -759,10 +760,10 @@ def run_vqa_task(
                     
             elif task == "ACT-X":
                 gt = s.label
-                prompt = prompt_actx_expl(prompt_mode)
+                prompt = prompt_actx_expl(prompt_mode, generation_mode)
                 raw_pred, token_entropy_raw = generate_answer(model, processor, s.image_path, prompt)
 
-                result = postprocess_prediction(raw_pred, "ACT-X")
+                result = postprocess_prediction(raw_pred, "ACT-X", generation_mode=generation_mode)
                 pred_full = result["full_text"]
                 pred_only = result["answer"]
                 expl = result["explanation"]
@@ -795,10 +796,10 @@ def run_vqa_task(
 
             elif task == "ESNLI-VE":
                 gt = s.label
-                prompt = prompt_esnlive_expl(s.hypothesis, prompt_mode)
+                prompt = prompt_esnlive_expl(s.hypothesis, prompt_mode, generation_mode)
                 raw_pred, token_entropy_raw = generate_answer(model, processor, s.image_path, prompt)
 
-                result = postprocess_prediction(raw_pred, "ESNLI-VE")
+                result = postprocess_prediction(raw_pred, "ESNLI-VE", generation_mode=generation_mode)
                 pred_full = result["full_text"]
                 label = result["answer"]
                 explanation = result["explanation"]
@@ -832,14 +833,14 @@ def run_vqa_task(
             elif task == "VCR":
                 choices = s.choices or []
                 gt = s.answer or ""
-                prompt = prompt_vcr_expl(s.question or "", choices, prompt_mode)
+                prompt = prompt_vcr_expl(s.question or "", choices, prompt_mode, generation_mode)
 
                 raw_pred, token_entropy_raw = generate_answer(model, processor, s.image_path, prompt)
                 print(f"[DEBUG run_vqa_task VCR] raw_pred: {repr(raw_pred)}")
                 print(f"[DEBUG run_vqa_task VCR] gt: {repr(gt)}")
                 print(f"[DEBUG run_vqa_task VCR] choices: {choices}")
                 
-                result = postprocess_prediction(raw_pred, "VCR", vcr_choices=choices)
+                result = postprocess_prediction(raw_pred, "VCR", vcr_choices=choices, generation_mode=generation_mode)
                 
                 pred_full = result["full_text"]
                 pred_answer_text = result["answer"]
