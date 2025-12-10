@@ -180,11 +180,19 @@ def main():
 
         model_dtype = torch.float16 if device == "cuda" else torch.float32
         
-        model = LlavaForConditionalGeneration.from_pretrained(
-            model_id,
-            torch_dtype=model_dtype,
-            low_cpu_mem_usage=True,
-        ).to(device)
+        if device == "cuda":
+            model = LlavaForConditionalGeneration.from_pretrained(
+                model_id,
+                torch_dtype=model_dtype,
+                low_cpu_mem_usage=True,
+                device_map="auto",
+            )
+        else:
+            model = LlavaForConditionalGeneration.from_pretrained(
+                model_id,
+                torch_dtype=model_dtype,
+                low_cpu_mem_usage=True,
+            ).to(device)
 
     elif model_name == "qwen":
         model_id = "Qwen/Qwen3-VL-8B-Instruct"
