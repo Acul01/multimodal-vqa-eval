@@ -39,9 +39,9 @@ def add_fewshot_examples(conversation: List[Dict], examples: List[Dict], k: int)
 # Answer + Explanation
 # =====================
 
-# ---------------------------------------------------------
-# VQA-X examples
-# ---------------------------------------------------------
+# -------------------------------------------------------------
+# VQA-X examples: question/answer typer: yes/no, number, other
+# -------------------------------------------------------------
 VQAX_FEWSHOT = [
     {
         "user": "Question: Is there a dog in the image?",
@@ -56,12 +56,12 @@ VQAX_FEWSHOT = [
         "assistant": "yellow because the vehicle is painted bright yellow",
     },
     {
-        "user": "Question: What is the person holding?",
-        "assistant": "a phone because they are gripping a mobile device in their hand",
+        "user": "Question: Is the person holding something?",
+        "assistant": "yes because the person has a mobile phone in his hand",
     },
     {
-        "user": "Question: Is it daytime or nighttime?",
-        "assistant": "daytime because the sky is bright and well-lit",
+        "user": "Question: How many dogs are in the park?",
+        "assistant": "3 because three canines are present in the park area",
     },
     {
         "user": "Question: What type of vehicle is shown?",
@@ -206,20 +206,20 @@ VCR_FEWSHOT = [
         "assistant": "A because the person shows clear signs of happiness",
     },
     {
-        "user": "Question: What is the woman doing? Options: A) reading B) sleeping C) running D) dancing",
-        "assistant": "A because she is holding an open book",
+        "user": "Question: What is the woman doing? Options: A) sleeping B) reading C) running D) dancing",
+        "assistant": "B because she is holding an open book",
     },
     {
-        "user": "Question: What is the child looking at? Options: A) dog B) phone C) bird D) ball",
-        "assistant": "B because the child is facing the device in their hands",
+        "user": "Question: What is the child looking at? Options: A) dog B) bird C) phone D) ball",
+        "assistant": "C because the child is facing the device in their hands",
     },
     {
         "user": "Question: What color is the car? Options: A) red B) blue C) green D) yellow",
-        "assistant": "A because the vehicle is painted red",
+        "assistant": "D because the vehicle is painted yellow",
     },
     {
         "user": "Question: How many people are visible? Options: A) one B) two C) three D) four",
-        "assistant": "B because there are two individuals in the scene",
+        "assistant": "A because there is just one individual in the scene",
     },
     {
         "user": "Question: Where is the scene taking place? Options: A) indoors B) outdoors C) in a car D) at a beach",
