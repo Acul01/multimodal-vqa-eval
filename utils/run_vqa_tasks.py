@@ -214,11 +214,17 @@ def generate_answer_batch(
     batch_size = len(images)
     
     if _is_qwen_model(model):
-        # Qwen3-VL: Process individually (Qwen's processor may not support native batching)
-        # But we can still process them in a loop efficiently
-        results = []
-        for img, conv in zip(images, conversations):
-            messages = _inject_image_into_messages(conv, img)
+        # Qwen3-VL: Try to batch properly with padding
+        batch_messages = [
+            _inject_image_into_messages(conv, img) 
+            for conv, img in zip(conversations, images)
+        ]
+        
+        # Process each conversation to get inputs
+        all_inputs = []
+        input_lens = []
+        
+        for messages in batch_messages:
             inputs = processor.apply_chat_template(
                 messages,
                 tokenize=True,
@@ -226,23 +232,114 @@ def generate_answer_batch(
                 return_dict=True,
                 return_tensors="pt",
             )
-            inputs = inputs.to(model.device)
-            input_len = inputs["input_ids"].shape[1]
+            all_inputs.append(inputs)
+            input_lens.append(inputs["input_ids"].shape[1])
+        
+        # Pad to same length and batch
+        max_len = max(input_lens)
+        eos_token_id = getattr(processor, "eos_token_id", None) or processor.tokenizer.eos_token_id
+        pad_token_id = processor.tokenizer.pad_token_id or eos_token_id
+        
+        batch_input_ids = []
+        batch_attention_mask = []
+        batch_pixel_values = []
+        has_pixel_values = False
+        
+        for inputs in all_inputs:
+            seq_len = inputs["input_ids"].shape[1]
+            pad_len = max_len - seq_len
             
-            with torch.inference_mode():
-                out = model.generate(
-                    **inputs,
-                    max_new_tokens=max_new_tokens,
-                    do_sample=False,
-                    temperature=None,
-                    eos_token_id=getattr(processor, "eos_token_id", None) or processor.tokenizer.eos_token_id,
-                    output_scores=True,
-                    return_dict_in_generate=True,
-                )
+            # Pad input_ids
+            padded_ids = torch.cat([
+                inputs["input_ids"],
+                torch.full((1, pad_len), pad_token_id, dtype=inputs["input_ids"].dtype)
+            ], dim=1)
+            batch_input_ids.append(padded_ids)
             
-            gen_only = out.sequences[0, input_len:]
+            # Pad attention mask
+            if "attention_mask" in inputs:
+                padded_mask = torch.cat([
+                    inputs["attention_mask"],
+                    torch.zeros((1, pad_len), dtype=inputs["attention_mask"].dtype)
+                ], dim=1)
+                batch_attention_mask.append(padded_mask)
+            
+            # Handle pixel_values
+            if "pixel_values" in inputs:
+                has_pixel_values = True
+                batch_pixel_values.append(inputs["pixel_values"])
+        
+        # Stack into batch tensors
+        batch_input_ids = torch.cat(batch_input_ids, dim=0).to(model.device)
+        if batch_attention_mask:
+            batch_attention_mask = torch.cat(batch_attention_mask, dim=0).to(model.device)
+        else:
+            batch_attention_mask = None
+        
+        # Handle pixel_values - check if all have same shape
+        if has_pixel_values:
+            if all(pv.shape == batch_pixel_values[0].shape for pv in batch_pixel_values):
+                batch_pixel_values_tensor = torch.cat(batch_pixel_values, dim=0).to(model.device)
+            else:
+                # Shapes differ - fallback to individual processing
+                results = []
+                for i, inputs in enumerate(all_inputs):
+                    inputs_dict = {k: v.to(model.device) if isinstance(v, torch.Tensor) else v 
+                                 for k, v in inputs.items()}
+                    input_len = input_lens[i]
+                    with torch.inference_mode():
+                        out = model.generate(
+                            **inputs_dict,
+                            max_new_tokens=max_new_tokens,
+                            do_sample=False,
+                            temperature=None,
+                            eos_token_id=eos_token_id,
+                            output_scores=True,
+                            return_dict_in_generate=True,
+                        )
+                    gen_only = out.sequences[0, input_len:]
+                    text = processor.decode(gen_only, skip_special_tokens=True).strip()
+                    token_entropy = extract_token_entropies(out, processor.tokenizer, input_len)
+                    results.append((text, token_entropy))
+                return results
+        else:
+            batch_pixel_values_tensor = None
+        
+        # Batch generation
+        batch_inputs = {"input_ids": batch_input_ids}
+        if batch_attention_mask is not None:
+            batch_inputs["attention_mask"] = batch_attention_mask
+        if batch_pixel_values_tensor is not None:
+            batch_inputs["pixel_values"] = batch_pixel_values_tensor
+        
+        with torch.inference_mode():
+            out = model.generate(
+                **batch_inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                temperature=None,
+                eos_token_id=eos_token_id,
+                pad_token_id=pad_token_id,
+                output_scores=True,
+                return_dict_in_generate=True,
+            )
+        
+        # Decode each sequence separately and extract entropies
+        results = []
+        for i in range(batch_size):
+            input_len = input_lens[i]
+            out_seq = out.sequences[i]
+            gen_only = out_seq[input_len:]
             text = processor.decode(gen_only, skip_special_tokens=True).strip()
-            token_entropy = extract_token_entropies(out, processor.tokenizer, input_len)
+            
+            # Extract entropy for this specific sequence
+            # Create a single-sequence output object for entropy extraction
+            single_out = type('obj', (object,), {
+                'sequences': out_seq.unsqueeze(0),
+                'scores': tuple(s[i:i+1] for s in out.scores) if hasattr(out, 'scores') and out.scores else None
+            })()
+            
+            token_entropy = extract_token_entropies(single_out, processor.tokenizer, input_len)
             results.append((text, token_entropy))
         
         return results
