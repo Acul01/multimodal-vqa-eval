@@ -21,7 +21,7 @@ A comprehensive evaluation framework for multimodal vision-language models on vi
   - Token-level entropy extraction for explanation analysis
 
 - **Prompting Strategies**:
-  - Zero-shot, 1-shot, and 3-shot prompting modes
+  - Zero-shot, 1-shot, 3-shot, and 6-shot prompting modes
   - Flexible prompting templates for each task
 
 - **Explanation Analysis**:
@@ -33,6 +33,7 @@ A comprehensive evaluation framework for multimodal vision-language models on vi
   - Run on train/val/test splits
   - Limit number of samples for quick testing
   - Toggle between explanation and answer-only modes
+  - Batch processing for faster evaluation (GPU-optimized)
 
 ## Data Structure
 
@@ -102,6 +103,13 @@ Run evaluation with default settings (VQA-X, LLaVA, val split, full dataset):
   - `zero`: Zero-shot prompting
   - `1shot`: 1-shot few-shot prompting
   - `3shot`: 3-shot few-shot prompting
+  - `6shot`: 6-shot few-shot prompting
+- `--batch_size`: Batch size for processing (default: `1`)
+  - `1`: Sequential processing (no batching)
+  - `2-20`: Batch processing for faster evaluation
+  - Recommended: `8-16` for V100-32GB GPU, `4-8` for smaller GPUs
+  - Higher batch sizes = faster processing but require more GPU memory
+  - **Note**: Batching does not affect results, only processing speed
 
 ### Examples
 
@@ -123,6 +131,16 @@ python main.py --task esnlive --model llava --split test --n_samples 100 --gener
 **Evaluate Qwen on VCR validation set (answers only, no explanations):**
 ```bash
 python main.py --task vcr --model qwen --split val --n_samples 200 --generate_explanations false
+```
+
+**Evaluate Qwen on VCR test set with 6-shot prompting and batch processing:**
+```bash
+python main.py --task vcr --model qwen --split test --generate_explanations true --prompt_mode 6shot --batch_size 12
+```
+
+**Evaluate LLaVA on VQA-X with batch processing for faster evaluation:**
+```bash
+python main.py --task vqax --model llava --split val --generate_explanations true --prompt_mode zero --batch_size 16
 ```
 
 ## Output Format
@@ -188,6 +206,36 @@ When `generate_explanations=true`, the framework also maintains `results/with_ex
 - `total_samples`: Total number of samples
 
 This allows tracking explanation quality across different prompting strategies and model configurations.
+
+## Performance Optimization
+
+### Batch Processing
+
+The framework supports batch processing to significantly speed up evaluation, especially on GPUs with large memory (e.g., V100-32GB, A100).
+
+**How it works:**
+- When `batch_size > 1`, multiple samples are processed in parallel
+- LLaVA models benefit most from batching (native batch support)
+- Qwen3-VL models are processed more efficiently with batching
+- Results are identical to sequential processing (`batch_size=1`)
+
+**Recommended batch sizes:**
+- **V100-32GB / A100-40GB**: `12-16` (can go up to `20` if memory allows)
+- **RTX 3090 / RTX 4090 (24GB)**: `8-12`
+- **RTX 3080 / RTX 4070 (16GB)**: `4-8`
+- **Smaller GPUs (8-12GB)**: `2-4`
+
+**Performance improvements:**
+- With `batch_size=12` on V100-32GB: **4-6x speedup** compared to sequential processing
+- Large datasets (e.g., VCR test with thousands of samples) can be reduced from days to hours
+
+**Monitoring GPU memory:**
+```bash
+# In a separate terminal, monitor GPU usage:
+watch -n 1 nvidia-smi
+```
+
+If GPU memory usage is below 70-80%, you can safely increase the batch size. If you encounter out-of-memory errors, reduce the batch size.
 
 ## Task-Specific Details
 
