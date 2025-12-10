@@ -314,11 +314,18 @@ def postprocess_prediction(
             # Extract answer from after "therefore"
             after_therefore = raw_text[therefore_match.end():].strip()
             
+            # Remove leading punctuation and whitespace (e.g., ", " after "Therefore,")
+            after_therefore = re.sub(r'^[,\s]+', '', after_therefore)
+            
             # Look for patterns like "the answer is: X" or "the activity is: X" or "the label is: X"
+            # Also handle "Therefore, the answer is" as a complete separator
             answer_patterns = [
-                r"(?:the\s+)?answer\s+is\s*:?\s*(.+)",
-                r"(?:the\s+)?activity\s+is\s*:?\s*(.+)",
-                r"(?:the\s+)?label\s+is\s*:?\s*(.+)",
+                r"the\s+answer\s+is\s*:?\s*(.+)",
+                r"the\s+activity\s+is\s*:?\s*(.+)",
+                r"the\s+label\s+is\s*:?\s*(.+)",
+                r"answer\s+is\s*:?\s*(.+)",
+                r"activity\s+is\s*:?\s*(.+)",
+                r"label\s+is\s*:?\s*(.+)",
             ]
             
             answer_raw = None
@@ -329,10 +336,15 @@ def postprocess_prediction(
                     break
             
             # If no pattern matched, try to extract first word/token after "therefore"
+            # (skip articles)
             if not answer_raw:
                 tokens = after_therefore.split()
-                if tokens:
-                    answer_raw = tokens[0].strip().rstrip(".,;:!?")
+                # Skip articles at the beginning
+                token_idx = 0
+                while token_idx < len(tokens) and tokens[token_idx].lower() in _ARTICLES:
+                    token_idx += 1
+                if token_idx < len(tokens):
+                    answer_raw = tokens[token_idx].strip().rstrip(".,;:!?")
             
             if not answer_raw:
                 answer_raw = "unknown"
@@ -389,11 +401,20 @@ def postprocess_prediction(
                 "raw_answer": "unknown",
             }
         
-        first_word = toks[0]
+        # Skip articles at the beginning
+        first_word_idx = 0
+        while first_word_idx < len(toks) and toks[first_word_idx] in _ARTICLES:
+            first_word_idx += 1
+        
+        if first_word_idx >= len(toks):
+            # Only articles found, use first token anyway
+            first_word_idx = 0
+        
+        first_word = toks[first_word_idx]
         if _is_yes_no_or_number(first_word):
-            # For yes/no/number: only first word is answer, rest is explanation
+            # For yes/no/number: use the word (and skip articles before it)
             answer_raw = first_word
-            expl_raw = " ".join(toks[1:]).strip()
+            expl_raw = " ".join(toks[first_word_idx + 1:]).strip()
         else:
             # For other answers: use standard because-splitting logic
             if " because " in f" {normalized} ":
@@ -401,9 +422,9 @@ def postprocess_prediction(
                 answer_raw = parts[0].strip()
                 expl_raw = parts[1].strip() if len(parts) > 1 else ""
             else:
-                # No "because" found: first word/token = answer, rest = explanation
+                # No "because" found: skip articles, then first word/token = answer, rest = explanation
                 answer_raw = first_word
-                expl_raw = " ".join(toks[1:]).strip()
+                expl_raw = " ".join(toks[first_word_idx + 1:]).strip()
     else:
         # For other tasks: standard because-splitting
         if " because " in f" {normalized} ":
