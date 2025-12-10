@@ -67,6 +67,13 @@ def parse_args():
         help="Prompting style when generate_explanations=true: zero / 1shot / 3shot / 6shot.",
     )
     parser.add_argument(
+        "--generation_mode",
+        type=str,
+        default="posthoc",
+        choices=["posthoc", "cot"],
+        help="Generation mode for answer+explanation: posthoc (answer because explanation) or cot (chain-of-thought with Therefore).",
+    )
+    parser.add_argument(
         "--batch_size",
         type=int,
         default=1,
@@ -137,7 +144,7 @@ def main():
     print(
         f"\nRunning task={args.task.upper()} | model={args.model.upper()} "
         f"| split={args.split} | n_samples={args.n_samples} "
-        f"| explanations={gen_expl} | prompt_mode={args.prompt_mode} | batch_size={args.batch_size}"
+        f"| explanations={gen_expl} | prompt_mode={args.prompt_mode} | generation_mode={args.generation_mode} | batch_size={args.batch_size}"
     )
 
     project_root = os.path.dirname(os.path.abspath(__file__))
@@ -227,6 +234,7 @@ def main():
             split=args.split,
             n_samples=args.n_samples,
             prompt_mode=args.prompt_mode,
+            generation_mode=args.generation_mode,
             batch_size=args.batch_size,
             )
     else:

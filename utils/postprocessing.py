@@ -13,6 +13,7 @@ TaskType = Literal["VQA-X", "ACT-X", "ESNLI-VE", "VCR"]
 # Constants
 _ARTICLES = {"a", "an", "the"}
 _BECAUSE_RE = re.compile(r"\bbecause\b", flags=re.I)
+_THEREFORE_RE = re.compile(r"\btherefore\b", flags=re.I)
 _LETTER_TO_IDX = {"a": 0, "b": 1, "c": 2, "d": 3}
 
 # Export for use in other modules
@@ -272,6 +273,7 @@ def postprocess_prediction(
     raw_text: str,
     task: TaskType,
     vcr_choices: Optional[list] = None,
+    generation_mode: str = "posthoc",
 ) -> Dict[str, str]:
     """
     Unified postprocessing function for all tasks.
@@ -280,6 +282,7 @@ def postprocess_prediction(
         raw_text: Raw model output text
         task: Task type ("VQA-X", "ACT-X", "ESNLI-VE", "VCR")
         vcr_choices: For VCR task, list of choice texts to map letter to answer
+        generation_mode: "posthoc" (answer because explanation) or "cot" (Therefore-based)
     
     Returns:
         Dictionary with keys:
@@ -296,17 +299,76 @@ def postprocess_prediction(
             "raw_answer": "unknown",
         }
 
-    # Task-specific preprocessing
-    if task == "ESNLI-VE":
-        # e-SNLI-VE: Replace comma with "because" if "because" not present
-        pred_full = raw_text.strip()
-        if "because" not in pred_full.lower():
-            pred_full = pred_full.replace(",", " because ", 1)
+    # Handle CoT vs post-hoc parsing
+    if generation_mode == "cot":
+        # CoT: Extract answer from "Therefore, the answer is: <answer>" pattern
+        # Extract everything before "Therefore" as explanation, and answer after "Therefore"
+        text_lower = raw_text.lower()
+        therefore_match = _THEREFORE_RE.search(text_lower)
+        
+        if therefore_match:
+            # Split at "therefore"
+            therefore_pos = therefore_match.start()
+            expl_raw = raw_text[:therefore_pos].strip()
+            
+            # Extract answer from after "therefore"
+            after_therefore = raw_text[therefore_match.end():].strip()
+            
+            # Look for patterns like "the answer is: X" or "the activity is: X" or "the label is: X"
+            answer_patterns = [
+                r"(?:the\s+)?answer\s+is\s*:?\s*(.+)",
+                r"(?:the\s+)?activity\s+is\s*:?\s*(.+)",
+                r"(?:the\s+)?label\s+is\s*:?\s*(.+)",
+            ]
+            
+            answer_raw = None
+            for pattern in answer_patterns:
+                match = re.search(pattern, after_therefore, flags=re.I)
+                if match:
+                    answer_raw = match.group(1).strip().rstrip(".,;:!?")
+                    break
+            
+            # If no pattern matched, try to extract first word/token after "therefore"
+            if not answer_raw:
+                tokens = after_therefore.split()
+                if tokens:
+                    answer_raw = tokens[0].strip().rstrip(".,;:!?")
+            
+            if not answer_raw:
+                answer_raw = "unknown"
+            
+            if not expl_raw:
+                expl_raw = "explanation missing"
+            
+            # Normalize answer
+            answer_normalized = normalize_generated_text(answer_raw)
+            expl_normalized = normalize_generated_text(expl_raw)
+            
+            # For CoT, we still format as "answer because explanation" for consistency
+            if not answer_normalized:
+                answer_normalized = "unknown"
+            if not expl_normalized:
+                expl_normalized = "explanation missing"
+            
+            # Continue with task-specific processing below
+            normalized = f"{answer_normalized} because {expl_normalized}"
+        else:
+            # No "therefore" found - fallback to post-hoc parsing
+            generation_mode = "posthoc"
+            pred_full = raw_text.strip()
+            normalized = normalize_generated_text(pred_full)
     else:
-        pred_full = raw_text.strip()
+        # Post-hoc: standard processing
+        if task == "ESNLI-VE":
+            # e-SNLI-VE: Replace comma with "because" if "because" not present
+            pred_full = raw_text.strip()
+            if "because" not in pred_full.lower():
+                pred_full = pred_full.replace(",", " because ", 1)
+        else:
+            pred_full = raw_text.strip()
 
-    # Normalize text
-    normalized = normalize_generated_text(pred_full)
+        # Normalize text
+        normalized = normalize_generated_text(pred_full)
 
     if not normalized:
         return {
