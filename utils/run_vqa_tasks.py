@@ -403,6 +403,9 @@ def run_vqa_task(
                 gt = batch_gts[i]
                 pixelshap_paths = None
                 sample_idx = batch_start + i + 1
+
+                if generation_mode == "cot":
+                    print(f"Raw CoT Output: {raw_pred}")
                 
                 # Postprocess (same as before)
                 if task == "VQA-X":
