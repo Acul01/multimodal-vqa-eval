@@ -136,9 +136,15 @@ def process_vcr_images(
     """
     Process all VCR images: find JSON annotations, draw boxes, save to output_dir.
     
+    The output directory structure will exactly match the input structure:
+    - Input: images_root/vcr1images/[subdirs]/image.jpg
+    - Output: output_dir/vcr1images/[subdirs]/image.jpg
+    
+    This ensures compatibility with load_data.py which expects the same structure.
+    
     Args:
         images_root: Root directory containing vcr1images/ folder
-        output_dir: Directory to save annotated images (will create vcr1images/ subdirectory)
+        output_dir: Root directory for output (will create vcr1images/ subdirectory with same structure)
         draw_seg: Whether to draw segmentation polygons
         draw_labels: Whether to draw box labels (indices)
         line_width: Width of bounding box lines
@@ -148,11 +154,11 @@ def process_vcr_images(
     if not os.path.exists(vcr_images_dir):
         raise FileNotFoundError(f"VCR images directory not found: {vcr_images_dir}")
     
-    # Create output directory structure
+    # Create output directory structure - must match input structure exactly
+    # output_dir/vcr1images/ will mirror images_root/vcr1images/
     output_vcr_dir = os.path.join(output_dir, "vcr1images")
-    os.makedirs(output_vcr_dir, exist_ok=True)
     
-    # Find all image files
+    # Find all image files (recursively, preserving directory structure)
     image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
     image_files = []
     
@@ -160,7 +166,8 @@ def process_vcr_images(
     for root, dirs, files in os.walk(vcr_images_dir):
         for file in files:
             if any(file.lower().endswith(ext) for ext in image_extensions):
-                image_files.append(os.path.join(root, file))
+                full_path = os.path.join(root, file)
+                image_files.append(full_path)
     
     print(f"Found {len(image_files)} image files")
     
@@ -170,27 +177,31 @@ def process_vcr_images(
     errors = 0
     
     for image_path in tqdm(image_files, desc="Processing images"):
-        # Find corresponding JSON
+        # Find corresponding JSON (same directory as image)
         json_path = find_json_for_image(image_path)
+        
+        # Calculate relative path from vcr_images_dir to preserve structure
+        # e.g., if image is at: images_root/vcr1images/lsmdc_xxx/yyy@0.jpg
+        # rel_path will be: lsmdc_xxx/yyy@0.jpg
+        rel_path = os.path.relpath(image_path, vcr_images_dir)
+        
+        # Output path maintains exact same structure
+        # output_dir/vcr1images/lsmdc_xxx/yyy@0.jpg
+        output_path = os.path.join(output_vcr_dir, rel_path)
         
         if json_path is None:
             skipped_no_json += 1
-            # Copy original image if no JSON found
-            rel_path = os.path.relpath(image_path, vcr_images_dir)
-            output_path = os.path.join(output_vcr_dir, rel_path)
+            # Copy original image if no JSON found (preserve structure)
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             try:
                 import shutil
                 shutil.copy2(image_path, output_path)
             except Exception as e:
                 print(f"[WARN] Failed to copy {image_path}: {e}")
+                errors += 1
             continue
         
-        # Determine output path (preserve directory structure)
-        rel_path = os.path.relpath(image_path, vcr_images_dir)
-        output_path = os.path.join(output_vcr_dir, rel_path)
-        
-        # Draw annotations
+        # Draw annotations and save with same filename (preserves structure)
         success = draw_annotations(
             image_path,
             json_path,
@@ -224,13 +235,13 @@ def main():
         '--images_root',
         type=str,
         required=True,
-        help='Root directory containing vcr1images/ folder'
+        help='Root directory containing vcr1images/ folder (e.g., /path/to/images)'
     )
     parser.add_argument(
         '--output_dir',
         type=str,
         default='vcr_images_with_boxes',
-        help='Output directory for annotated images (default: vcr_images_with_boxes)'
+        help='Root output directory (will create vcr1images/ subdirectory with same structure as input). Default: vcr_images_with_boxes'
     )
     parser.add_argument(
         '--draw_seg',
