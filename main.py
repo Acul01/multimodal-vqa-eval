@@ -79,6 +79,11 @@ def parse_args():
         default=1,
         help="Batch size for processing (1 = no batching, 2-20 recommended for V100-32GB). Higher = faster but needs more GPU memory.",
     )
+    parser.add_argument(
+        "--boxes",
+        action="store_true",
+        help="For VCR task: use images with bounding boxes (from images/vcr1images_with_boxes/vcr1images/) instead of original images (from images/vcr1images/).",
+    )
     return parser.parse_args()
 
 
@@ -229,6 +234,24 @@ def main():
     task_key = TASK_CANON[args.task.lower()]
 
     # -------------------------
+    # Adjust images_root for VCR with boxes
+    # -------------------------
+    if task_key == "VCR" and args.boxes:
+        # Use images with boxes: images_root/vcr1images_with_boxes/vcr1images/...
+        images_root_vcr = os.path.join(images_root, "vcr1images_with_boxes")
+        if not os.path.exists(images_root_vcr):
+            raise FileNotFoundError(
+                f"VCR images with boxes not found at: {images_root_vcr}\n"
+                f"Run prepare_vcr_images_with_boxes.py first to generate annotated images."
+            )
+        images_root_for_task = images_root_vcr
+        print(f"[INFO] Using VCR images with bounding boxes from: {images_root_vcr}")
+    else:
+        images_root_for_task = images_root
+        if task_key == "VCR":
+            print(f"[INFO] Using original VCR images from: {images_root}")
+
+    # -------------------------
     # Run task
     # -------------------------
     if gen_expl:
@@ -237,7 +260,7 @@ def main():
             task_key,
             model,
             processor,
-            images_root,
+            images_root_for_task,
             nle_root,
             split=args.split,
             n_samples=args.n_samples,
@@ -251,7 +274,7 @@ def main():
             task_key,
             model,
             processor,
-            images_root,
+            images_root_for_task,
             nle_root,
             split=args.split,
             n_samples=args.n_samples,
@@ -292,7 +315,7 @@ def main():
         elif task_key == "VCR":
             out_csv = evaluate_vcr_to_csv(
                 results,
-                images_root,
+                images_root_for_task,  # Use images_root_for_task for VCR (supports --boxes)
                 os.path.join(nle_root, "VCR"),
                 split=args.split,
                 save_dir=model_results_dir,
@@ -325,7 +348,7 @@ def main():
         elif task_key == "VCR":
             out_csv = evaluate_vcr_answers_only_to_csv(
                 results,
-                images_root,
+                images_root_for_task,  # Use images_root_for_task for VCR (supports --boxes)
                 os.path.join(nle_root, "VCR"),
                 split=args.split,
                 save_dir=model_results_dir,
