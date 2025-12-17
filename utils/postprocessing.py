@@ -371,16 +371,16 @@ def postprocess_prediction(
             normalized = normalize_generated_text(pred_full)
     else:
         # Post-hoc: standard processing
-        if task == "ESNLI-VE":
-            # e-SNLI-VE: Replace comma with "because" if "because" not present
-            pred_full = raw_text.strip()
-            if "because" not in pred_full.lower():
-                pred_full = pred_full.replace(",", " because ", 1)
-        else:
-            pred_full = raw_text.strip()
+    if task == "ESNLI-VE":
+        # e-SNLI-VE: Replace comma with "because" if "because" not present
+        pred_full = raw_text.strip()
+        if "because" not in pred_full.lower():
+            pred_full = pred_full.replace(",", " because ", 1)
+    else:
+        pred_full = raw_text.strip()
 
-        # Normalize text
-        normalized = normalize_generated_text(pred_full)
+    # Normalize text
+    normalized = normalize_generated_text(pred_full)
 
     if not normalized:
         return {

@@ -87,8 +87,7 @@ def prompt_question_from_description_cot_vqax(description: str, question: str):
         f"Based on the following image description, answer the question:\n\n"
         f"Image description: {description}\n\n"
         f"Question: {question}\n\n"
-        f"Think step by step and provide your answer in this format:\n"
-        f"<explanation> Therefore, the answer is: <answer>"
+        f"Provide only the answer, no additional text or explanation. Use at most three words."
     )
     
     return {
@@ -105,8 +104,7 @@ def prompt_question_from_description_cot_actx(description: str):
     instructions = (
         f"Based on the following image description, identify the activity:\n\n"
         f"Image description: {description}\n\n"
-        f"Think step by step and provide your answer in this format:\n"
-        f"<explanation> Therefore, the activity is: <activity>"
+        f"Provide only the activity name, no additional text or explanation. Use at most two words."
     )
     
     return {
@@ -124,9 +122,7 @@ def prompt_question_from_description_cot_esnlive(description: str, hypothesis: s
         f"Based on the following image description, evaluate the hypothesis:\n\n"
         f"Image description: {description}\n\n"
         f"Hypothesis: {hypothesis}\n\n"
-        f"Think step by step and provide your answer in this format:\n"
-        f"<explanation> Therefore, the answer is: <label>\n"
-        f"Label must be: entailment, contradiction, or neutral."
+        f"Provide only the label, no additional text or explanation. Label must be exactly one of: entailment, contradiction, neutral."
     )
     
     return {
@@ -150,9 +146,7 @@ def prompt_question_from_description_cot_vcr(description: str, question: str, ch
         f"B) {padded[1]}\n"
         f"C) {padded[2]}\n"
         f"D) {padded[3]}\n\n"
-        f"Think step by step and provide your answer in this format:\n"
-        f"<explanation> Therefore, the answer is: <letter>\n"
-        f"Letter must be A, B, C, or D."
+        f"Provide only the letter (A, B, C, or D), no additional text or explanation."
     )
     
     return {
