@@ -5,6 +5,8 @@ from a results CSV file.
 
 Usage:
     python calculate_rouge_scores.py
+    
+The script will prompt you to enter the path to the CSV file.
 """
 
 import pandas as pd
@@ -137,24 +139,26 @@ def print_rouge_results(results: Dict[str, Dict[str, float]]):
 
 
 def main():
-    # ============================================
-    # MANUALLY SET THE CSV FILE PATH HERE
-    # ============================================
-    csv_path = "/path/to/your/results.csv"
+    # Ask user for CSV file path
+    print("="*70)
+    print("ROUGE Score Calculator")
+    print("="*70)
+    print("\nThis script calculates ROUGE scores between 'gt_explanation' and 'generated_explanation' columns.")
+    print("\nPlease enter the path to the CSV file:")
     
-    # Example paths (uncomment and modify as needed):
-    # csv_path = "results/with_explanation/qwen_results/vqax_test_eval-6shot.csv"
-    # csv_path = "results/with_explanation/llava_results/vcr_val_eval.csv"
-    # csv_path = "/netscratch/lrippe/project_scripts/multimodal_vqa_eval/results/with_explanation/qwen_results/vcr_test_eval.csv"
+    csv_path = input("CSV file path: ").strip()
     
-    # ============================================
+    # Remove quotes if user added them
+    if csv_path.startswith('"') and csv_path.endswith('"'):
+        csv_path = csv_path[1:-1]
+    elif csv_path.startswith("'") and csv_path.endswith("'"):
+        csv_path = csv_path[1:-1]
     
-    if csv_path == "/path/to/your/results.csv":
-        print("Error: Please set the csv_path variable in the script!")
-        print("Edit the 'csv_path' variable in the main() function.")
+    if not csv_path:
+        print("Error: No path provided!")
         return
     
-    print(f"Loading CSV file: {csv_path}")
+    print(f"\nLoading CSV file: {csv_path}")
     print(f"Calculating ROUGE scores between 'gt_explanation' and 'generated_explanation'...")
     
     try:
