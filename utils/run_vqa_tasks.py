@@ -680,6 +680,7 @@ def run_vqa_task(
     pixelshap_out_dir: Optional[str] = None,
     max_tokens_pixelshap: Optional[int] = 3,
     batch_size: int = 1,
+    cot_variant: str = "1",
 ):
     """
     Unified entry point for VQA-X, ACT-X, ESNLI-VE, VCR (answer+explanation).
@@ -769,23 +770,27 @@ def run_vqa_task(
                     if task == "VQA-X":
                         raw_pred, token_entropy_raw = generate_answer_cot_2stage(
                             model, processor, batch_paths[i], task, prompt_mode,
-                            question=s.question, max_new_tokens=40, device=device_str
+                            question=s.question, max_new_tokens=40, device=device_str,
+                            use_question_in_stage1=(cot_variant == "2")
                         )
                     elif task == "ACT-X":
                         raw_pred, token_entropy_raw = generate_answer_cot_2stage(
                             model, processor, batch_paths[i], task, prompt_mode,
-                            max_new_tokens=40, device=device_str
+                            max_new_tokens=40, device=device_str,
+                            use_question_in_stage1=(cot_variant == "2")
                         )
                     elif task == "ESNLI-VE":
                         raw_pred, token_entropy_raw = generate_answer_cot_2stage(
                             model, processor, batch_paths[i], task, prompt_mode,
-                            hypothesis=s.hypothesis, max_new_tokens=40, device=device_str
+                            hypothesis=s.hypothesis, max_new_tokens=40, device=device_str,
+                            use_question_in_stage1=(cot_variant == "2")
                         )
                     elif task == "VCR":
                         raw_pred, token_entropy_raw = generate_answer_cot_2stage(
                             model, processor, batch_paths[i], task, prompt_mode,
                             question=s.question or "", choices=s.choices or [],
-                            max_new_tokens=40, device=device_str
+                            max_new_tokens=40, device=device_str,
+                            use_question_in_stage1=(cot_variant == "2")
                         )
                     batch_results.append((raw_pred, token_entropy_raw))
             else:
@@ -964,7 +969,8 @@ def run_vqa_task(
                 if generation_mode == "cot":
                     raw_pred, token_entropy_raw = generate_answer_cot_2stage(
                         model, processor, s.image_path, task, prompt_mode,
-                        question=s.question, max_new_tokens=40, device=device_str
+                        question=s.question, max_new_tokens=40, device=device_str,
+                        use_question_in_stage1=(cot_variant == "2")
                     )
                 else:
                     prompt = prompt_vqax_expl(s.question, prompt_mode, generation_mode)
@@ -1085,7 +1091,8 @@ def run_vqa_task(
                 if generation_mode == "cot":
                     raw_pred, token_entropy_raw = generate_answer_cot_2stage(
                         model, processor, s.image_path, task, prompt_mode,
-                        max_new_tokens=40, device=device_str
+                        max_new_tokens=40, device=device_str,
+                        use_question_in_stage1=(cot_variant == "2")
                     )
                 else:
                     prompt = prompt_actx_expl(prompt_mode, generation_mode)
@@ -1127,7 +1134,8 @@ def run_vqa_task(
                 if generation_mode == "cot":
                     raw_pred, token_entropy_raw = generate_answer_cot_2stage(
                         model, processor, s.image_path, task, prompt_mode,
-                        hypothesis=s.hypothesis, max_new_tokens=40, device=device_str
+                        hypothesis=s.hypothesis, max_new_tokens=40, device=device_str,
+                        use_question_in_stage1=(cot_variant == "2")
                     )
                 else:
                     prompt = prompt_esnlive_expl(s.hypothesis, prompt_mode, generation_mode)
@@ -1171,7 +1179,8 @@ def run_vqa_task(
                     raw_pred, token_entropy_raw = generate_answer_cot_2stage(
                         model, processor, s.image_path, task, prompt_mode,
                         question=s.question or "", choices=choices,
-                        max_new_tokens=40, device=device_str
+                        max_new_tokens=40, device=device_str,
+                        use_question_in_stage1=(cot_variant == "2")
                     )
                 else:
                     prompt = prompt_vcr_expl(s.question or "", choices, prompt_mode, generation_mode)

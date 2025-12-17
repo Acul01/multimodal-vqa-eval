@@ -84,6 +84,13 @@ def parse_args():
         action="store_true",
         help="For VCR task: use images with bounding boxes (from images/vcr1images_with_boxes/vcr1images/) instead of original images (from images/vcr1images/).",
     )
+    parser.add_argument(
+        "--cot_variant",
+        type=str,
+        default="1",
+        choices=["1", "2"],
+        help="CoT variant when generation_mode=cot: 1=question NOT in Stage 1 (default), 2=question IN Stage 1.",
+    )
     return parser.parse_args()
 
 
@@ -267,6 +274,7 @@ def main():
             prompt_mode=args.prompt_mode,
             generation_mode=args.generation_mode,
             batch_size=args.batch_size,
+            cot_variant=args.cot_variant,
             )
     else:
         # answers only → aktuelle noEx-Version kennt kein prompt_mode
