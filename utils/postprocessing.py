@@ -274,15 +274,17 @@ def postprocess_prediction(
     task: TaskType,
     vcr_choices: Optional[list] = None,
     generation_mode: str = "posthoc",
+    description: Optional[str] = None,
 ) -> Dict[str, str]:
     """
     Unified postprocessing function for all tasks.
     
     Args:
-        raw_text: Raw model output text
+        raw_text: Raw model output text (for CoT: Stage 2 answer; for post-hoc: full text)
         task: Task type ("VQA-X", "ACT-X", "ESNLI-VE", "VCR")
         vcr_choices: For VCR task, list of choice texts to map letter to answer
-        generation_mode: "posthoc" (answer because explanation) or "cot" (Therefore-based)
+        generation_mode: "posthoc" (answer because explanation) or "cot" (2-stage)
+        description: For CoT, the Stage 1 description (explanation). If None, uses old Therefore-based parsing.
     
     Returns:
         Dictionary with keys:
@@ -300,9 +302,95 @@ def postprocess_prediction(
         }
 
     # Handle CoT vs post-hoc parsing
-    if generation_mode == "cot":
-        # CoT: Extract answer from "Therefore, the answer is: <answer>" pattern
-        # Extract everything before "Therefore" as explanation, and answer after "Therefore"
+    if generation_mode == "cot" and description is not None:
+        # CoT 2-stage: description and answer are already separated
+        # Stage 1 output = description (explanation)
+        # Stage 2 output = raw_text (answer)
+        answer_raw = raw_text.strip()
+        expl_raw = description.strip()
+        
+        # Normalize both
+        answer_normalized = normalize_generated_text(answer_raw)
+        expl_normalized = normalize_generated_text(expl_raw)
+        
+        if not answer_normalized:
+            answer_normalized = "unknown"
+        if not expl_normalized:
+            expl_normalized = "explanation missing"
+        
+        # Format as "answer because explanation"
+        normalized = f"{answer_normalized} because {expl_normalized}"
+        
+        # Extract answer_raw and expl_raw for task-specific processing
+        answer_raw = answer_normalized
+        expl_raw = expl_normalized
+        
+        # Jump directly to task-specific postprocessing (skip post-hoc logic)
+        # Task-specific postprocessing starts here for CoT
+        if task == "VCR":
+            # VCR: Extract letter and map to answer text
+            letter = _parse_vcr_letter(answer_raw, vcr_choices)
+            if letter is not None and vcr_choices and 0 <= _LETTER_TO_IDX[letter] < len(vcr_choices):
+                answer_text = vcr_choices[_LETTER_TO_IDX[letter]]
+            else:
+                answer_text = "unknown"
+            
+            if not expl_raw:
+                expl_raw = "no further details"
+            
+            return {
+                "answer": answer_text.lower(),
+                "explanation": expl_raw,
+                "full_text": f"{answer_text.lower()} because {expl_raw}",
+                "raw_answer": letter or "unknown",
+            }
+        
+        elif task == "ESNLI-VE":
+            # e-SNLI-VE: Force label to valid space
+            label = _force_label_space(answer_raw)
+            explanation = expl_raw if expl_raw else "explanation missing"
+            
+            return {
+                "answer": label,
+                "explanation": explanation,
+                "full_text": f"{label} because {explanation}",
+                "raw_answer": label,
+            }
+        
+        elif task == "VQA-X":
+            # VQA-X: answer is already extracted, just use it
+            explanation = expl_raw if expl_raw else "explanation missing"
+            
+            return {
+                "answer": answer_normalized,
+                "explanation": explanation,
+                "full_text": normalized,
+                "raw_answer": answer_normalized,
+            }
+        
+        elif task == "ACT-X":
+            # ACT-X: answer is already extracted, just use it
+            explanation = expl_raw if expl_raw else "explanation missing"
+            
+            return {
+                "answer": answer_normalized,
+                "explanation": explanation,
+                "full_text": normalized,
+                "raw_answer": answer_normalized,
+            }
+        
+        else:
+            # Fallback for unknown tasks
+            return {
+                "answer": answer_normalized,
+                "explanation": expl_normalized,
+                "full_text": normalized,
+                "raw_answer": answer_normalized,
+            }
+    
+    elif generation_mode == "cot":
+        # Fallback: Old CoT parsing with "Therefore" pattern (for backward compatibility)
+        # This is used when description is not provided (e.g., old single-stage CoT)
         text_lower = raw_text.lower()
         therefore_match = _THEREFORE_RE.search(text_lower)
         
@@ -362,8 +450,72 @@ def postprocess_prediction(
             if not expl_normalized:
                 expl_normalized = "explanation missing"
             
-            # Continue with task-specific processing below
-            normalized = f"{answer_normalized} because {expl_normalized}"
+            # For CoT with "therefore", extract answer_raw and expl_raw for task-specific processing
+            answer_raw = answer_normalized
+            expl_raw = expl_normalized
+            
+            # Jump directly to task-specific postprocessing (skip post-hoc logic)
+            # Task-specific postprocessing starts here for CoT (fallback "therefore" parsing)
+            if task == "VCR":
+                # VCR: Extract letter and map to answer text
+                letter = _parse_vcr_letter(answer_raw, vcr_choices)
+                if letter is not None and vcr_choices and 0 <= _LETTER_TO_IDX[letter] < len(vcr_choices):
+                    answer_text = vcr_choices[_LETTER_TO_IDX[letter]]
+                else:
+                    answer_text = "unknown"
+                
+                if not expl_raw:
+                    expl_raw = "no further details"
+                
+                return {
+                    "answer": answer_text.lower(),
+                    "explanation": expl_raw,
+                    "full_text": f"{answer_text.lower()} because {expl_raw}",
+                    "raw_answer": letter or "unknown",
+                }
+            
+            elif task == "ESNLI-VE":
+                # e-SNLI-VE: Force label to valid space
+                label = _force_label_space(answer_raw)
+                explanation = expl_raw if expl_raw else "explanation missing"
+                
+                return {
+                    "answer": label,
+                    "explanation": explanation,
+                    "full_text": f"{label} because {explanation}",
+                    "raw_answer": label,
+                }
+            
+            elif task == "VQA-X":
+                # VQA-X: answer is already extracted
+                explanation = expl_raw if expl_raw else "explanation missing"
+                
+                return {
+                    "answer": answer_normalized,
+                    "explanation": explanation,
+                    "full_text": f"{answer_normalized} because {explanation}",
+                    "raw_answer": answer_normalized,
+                }
+            
+            elif task == "ACT-X":
+                # ACT-X: answer is already extracted
+                explanation = expl_raw if expl_raw else "explanation missing"
+                
+                return {
+                    "answer": answer_normalized,
+                    "explanation": explanation,
+                    "full_text": f"{answer_normalized} because {explanation}",
+                    "raw_answer": answer_normalized,
+                }
+            
+            else:
+                # Fallback for unknown tasks
+                return {
+                    "answer": answer_normalized,
+                    "explanation": expl_normalized,
+                    "full_text": f"{answer_normalized} because {expl_normalized}",
+                    "raw_answer": answer_normalized,
+                }
         else:
             # No "therefore" found - fallback to post-hoc parsing
             generation_mode = "posthoc"
@@ -379,8 +531,8 @@ def postprocess_prediction(
         else:
             pred_full = raw_text.strip()
 
-    # Normalize text
-    normalized = normalize_generated_text(pred_full)
+        # Normalize text
+        normalized = normalize_generated_text(pred_full)
 
     if not normalized:
         return {

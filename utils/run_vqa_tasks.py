@@ -176,7 +176,9 @@ def generate_answer_cot_2stage(
         model, processor, image_path, stage2_conv, max_new_tokens=max_new_tokens, device=device
     )
     
-    return answer, token_entropy
+    # Return both description (Stage 1) and answer (Stage 2) for CoT
+    # Format: ((description, answer), token_entropy)
+    return (description, answer), token_entropy
 
 
 def generate_answer_with_message_list(
@@ -768,31 +770,32 @@ def run_vqa_task(
                 batch_results = []
                 for i, s in enumerate(batch_samples):
                     if task == "VQA-X":
-                        raw_pred, token_entropy_raw = generate_answer_cot_2stage(
+                        (description, answer), token_entropy_raw = generate_answer_cot_2stage(
                             model, processor, batch_paths[i], task, prompt_mode,
                             question=s.question, max_new_tokens=40, device=device_str,
                             use_question_in_stage1=(cot_variant == "2")
                         )
                     elif task == "ACT-X":
-                        raw_pred, token_entropy_raw = generate_answer_cot_2stage(
+                        (description, answer), token_entropy_raw = generate_answer_cot_2stage(
                             model, processor, batch_paths[i], task, prompt_mode,
                             max_new_tokens=40, device=device_str,
                             use_question_in_stage1=(cot_variant == "2")
                         )
                     elif task == "ESNLI-VE":
-                        raw_pred, token_entropy_raw = generate_answer_cot_2stage(
+                        (description, answer), token_entropy_raw = generate_answer_cot_2stage(
                             model, processor, batch_paths[i], task, prompt_mode,
                             hypothesis=s.hypothesis, max_new_tokens=40, device=device_str,
                             use_question_in_stage1=(cot_variant == "2")
                         )
                     elif task == "VCR":
-                        raw_pred, token_entropy_raw = generate_answer_cot_2stage(
+                        (description, answer), token_entropy_raw = generate_answer_cot_2stage(
                             model, processor, batch_paths[i], task, prompt_mode,
                             question=s.question or "", choices=s.choices or [],
                             max_new_tokens=40, device=device_str,
                             use_question_in_stage1=(cot_variant == "2")
                         )
-                    batch_results.append((raw_pred, token_entropy_raw))
+                    # For CoT, we pass both description and answer to postprocessing
+                    batch_results.append(((description, answer), token_entropy_raw))
             else:
                 batch_results = generate_answer_batch(
                     model, processor, batch_paths, batch_conversations,
@@ -800,34 +803,45 @@ def run_vqa_task(
                 )
             
             # Process each result in batch
-            for i, (raw_pred, token_entropy_raw) in enumerate(batch_results):
+            for i, (raw_pred_or_tuple, token_entropy_raw) in enumerate(batch_results):
                 s = batch_samples[i]
                 gt = batch_gts[i]
                 pixelshap_paths = None
                 sample_idx = batch_start + i + 1
 
+                # Handle CoT vs post-hoc format
                 if generation_mode == "cot":
-                    print(f"Raw CoT Output: {raw_pred}")
+                    # CoT: raw_pred_or_tuple is ((description, answer), token_entropy)
+                    description, answer = raw_pred_or_tuple
+                    print(f"Raw CoT Output - Description: {description}")
+                    print(f"Raw CoT Output - Answer: {answer}")
+                    raw_pred = answer  # Use answer for postprocessing
+                    cot_description = description  # Pass description separately
+                else:
+                    # Post-hoc: raw_pred_or_tuple is just (raw_pred, token_entropy)
+                    # For batch processing, raw_pred_or_tuple is already the raw_pred string
+                    raw_pred = raw_pred_or_tuple
+                    cot_description = None
                 
-                # Postprocess (same as before)
+                # Postprocess
                 if task == "VQA-X":
-                    result = postprocess_prediction(raw_pred, "VQA-X", generation_mode=generation_mode)
+                    result = postprocess_prediction(raw_pred, "VQA-X", generation_mode=generation_mode, description=cot_description)
                     pred_full = result["full_text"]
                     pred_only = result["answer"]
                     expl = result["explanation"]
                 elif task == "ACT-X":
-                    result = postprocess_prediction(raw_pred, "ACT-X", generation_mode=generation_mode)
+                    result = postprocess_prediction(raw_pred, "ACT-X", generation_mode=generation_mode, description=cot_description)
                     pred_full = result["full_text"]
                     pred_only = result["answer"]
                     expl = result["explanation"]
                 elif task == "ESNLI-VE":
-                    result = postprocess_prediction(raw_pred, "ESNLI-VE", generation_mode=generation_mode)
+                    result = postprocess_prediction(raw_pred, "ESNLI-VE", generation_mode=generation_mode, description=cot_description)
                     pred_full = result["full_text"]
                     pred_only = result["answer"]
                     expl = result["explanation"]
                 elif task == "VCR":
                     choices = s.choices or []
-                    result = postprocess_prediction(raw_pred, "VCR", vcr_choices=choices, generation_mode=generation_mode)
+                    result = postprocess_prediction(raw_pred, "VCR", vcr_choices=choices, generation_mode=generation_mode, description=cot_description)
                     pred_full = result["full_text"]
                     pred_only = result["answer"]
                     expl = result["explanation"]
@@ -967,16 +981,19 @@ def run_vqa_task(
             if task == "VQA-X":
                 gt = majority_vqa_answer(s.raw.get("answers"))
                 if generation_mode == "cot":
-                    raw_pred, token_entropy_raw = generate_answer_cot_2stage(
+                    (description, answer), token_entropy_raw = generate_answer_cot_2stage(
                         model, processor, s.image_path, task, prompt_mode,
                         question=s.question, max_new_tokens=40, device=device_str,
                         use_question_in_stage1=(cot_variant == "2")
                     )
+                    raw_pred = answer
+                    cot_description = description
                 else:
                     prompt = prompt_vqax_expl(s.question, prompt_mode, generation_mode)
                     raw_pred, token_entropy_raw = generate_answer(model, processor, s.image_path, prompt)
+                    cot_description = None
 
-                result = postprocess_prediction(raw_pred, "VQA-X", generation_mode=generation_mode)
+                result = postprocess_prediction(raw_pred, "VQA-X", generation_mode=generation_mode, description=cot_description)
                 pred_full = result["full_text"]
                 pred_only = result["answer"]
                 expl = result["explanation"]
@@ -1089,16 +1106,19 @@ def run_vqa_task(
             elif task == "ACT-X":
                 gt = s.label
                 if generation_mode == "cot":
-                    raw_pred, token_entropy_raw = generate_answer_cot_2stage(
+                    (description, answer), token_entropy_raw = generate_answer_cot_2stage(
                         model, processor, s.image_path, task, prompt_mode,
                         max_new_tokens=40, device=device_str,
                         use_question_in_stage1=(cot_variant == "2")
                     )
+                    raw_pred = answer
+                    cot_description = description
                 else:
                     prompt = prompt_actx_expl(prompt_mode, generation_mode)
                     raw_pred, token_entropy_raw = generate_answer(model, processor, s.image_path, prompt)
+                    cot_description = None
 
-                result = postprocess_prediction(raw_pred, "ACT-X", generation_mode=generation_mode)
+                result = postprocess_prediction(raw_pred, "ACT-X", generation_mode=generation_mode, description=cot_description)
                 pred_full = result["full_text"]
                 pred_only = result["answer"]
                 expl = result["explanation"]
@@ -1132,16 +1152,19 @@ def run_vqa_task(
             elif task == "ESNLI-VE":
                 gt = s.label
                 if generation_mode == "cot":
-                    raw_pred, token_entropy_raw = generate_answer_cot_2stage(
+                    (description, answer), token_entropy_raw = generate_answer_cot_2stage(
                         model, processor, s.image_path, task, prompt_mode,
                         hypothesis=s.hypothesis, max_new_tokens=40, device=device_str,
                         use_question_in_stage1=(cot_variant == "2")
                     )
+                    raw_pred = answer
+                    cot_description = description
                 else:
                     prompt = prompt_esnlive_expl(s.hypothesis, prompt_mode, generation_mode)
                     raw_pred, token_entropy_raw = generate_answer(model, processor, s.image_path, prompt)
+                    cot_description = None
 
-                result = postprocess_prediction(raw_pred, "ESNLI-VE", generation_mode=generation_mode)
+                result = postprocess_prediction(raw_pred, "ESNLI-VE", generation_mode=generation_mode, description=cot_description)
                 pred_full = result["full_text"]
                 label = result["answer"]
                 explanation = result["explanation"]
@@ -1176,20 +1199,23 @@ def run_vqa_task(
                 choices = s.choices or []
                 gt = s.answer or ""
                 if generation_mode == "cot":
-                    raw_pred, token_entropy_raw = generate_answer_cot_2stage(
+                    (description, answer), token_entropy_raw = generate_answer_cot_2stage(
                         model, processor, s.image_path, task, prompt_mode,
                         question=s.question or "", choices=choices,
                         max_new_tokens=40, device=device_str,
                         use_question_in_stage1=(cot_variant == "2")
                     )
+                    raw_pred = answer
+                    cot_description = description
                 else:
                     prompt = prompt_vcr_expl(s.question or "", choices, prompt_mode, generation_mode)
                     raw_pred, token_entropy_raw = generate_answer(model, processor, s.image_path, prompt)
+                    cot_description = None
                 print(f"[DEBUG run_vqa_task VCR] raw_pred: {repr(raw_pred)}")
                 print(f"[DEBUG run_vqa_task VCR] gt: {repr(gt)}")
                 print(f"[DEBUG run_vqa_task VCR] choices: {choices}")
-                
-                result = postprocess_prediction(raw_pred, "VCR", vcr_choices=choices, generation_mode=generation_mode)
+
+                result = postprocess_prediction(raw_pred, "VCR", vcr_choices=choices, generation_mode=generation_mode, description=cot_description)
                 
                 pred_full = result["full_text"]
                 pred_answer_text = result["answer"]
