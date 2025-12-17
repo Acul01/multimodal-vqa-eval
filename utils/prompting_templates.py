@@ -1,4 +1,13 @@
-from typing import List, Dict
+from typing import List, Dict, Optional
+
+# Import CoT prompting templates from the cot_prompting_templates package
+from .cot_prompting_templates import (
+    prompt_image_description_cot as _prompt_image_description_cot_base,
+    prompt_question_from_description_cot_vqax,
+    prompt_question_from_description_cot_actx,
+    prompt_question_from_description_cot_esnlive,
+    prompt_question_from_description_cot_vcr,
+)
 
 
 # -------------------------------------------------------------------
@@ -33,6 +42,55 @@ def add_fewshot_examples(conversation: List[Dict], examples: List[Dict], k: int)
             "role": "assistant",
             "content": [{"type": "text", "text": ex["assistant"]}],
         })
+
+
+# -------------------------------------------------------------------
+# CoT Prompting Templates Wrapper
+# -------------------------------------------------------------------
+# Wrapper function that injects helper functions into the CoT template
+def prompt_image_description_cot(
+    prompt_mode: str = "zero",
+    question: Optional[str] = None,
+    hypothesis: Optional[str] = None,
+    choices: Optional[List[str]] = None,
+    task: Optional[str] = None,
+    use_question_in_stage1: bool = False,
+):
+    """
+    Stage 1 of CoT: Generate a description of the image.
+    Returns a conversation with just the image description prompt.
+    
+    This is a wrapper that injects the helper functions into the CoT template.
+    
+    Args:
+        prompt_mode: Prompt mode (zero, 1shot, 3shot, 6shot)
+        question: Question to answer (for VQA-X, VCR) - used in Variant 2
+        hypothesis: Hypothesis to evaluate (for ESNLI-VE) - used in Variant 2
+        choices: Answer choices (for VCR) - used in Variant 2
+        task: Task name (VQA-X, ACT-X, ESNLI-VE, VCR) - used in Variant 2
+        use_question_in_stage1: If True, use Variant 2 (question in Stage 1), else Variant 1 (default)
+    """
+    if use_question_in_stage1:
+        # Import Variant 2
+        from .cot_prompting_templates.cot_2stage_with_question import (
+            prompt_image_description_cot as _prompt_image_description_cot_v2,
+        )
+        return _prompt_image_description_cot_v2(
+            prompt_mode=prompt_mode,
+            question=question,
+            hypothesis=hypothesis,
+            choices=choices,
+            task=task,
+            resolve_shot_count=resolve_shot_count,
+            add_fewshot_examples=add_fewshot_examples,
+        )
+    else:
+        # Use default Variant 1
+        return _prompt_image_description_cot_base(
+            prompt_mode=prompt_mode,
+            resolve_shot_count=resolve_shot_count,
+            add_fewshot_examples=add_fewshot_examples,
+        )
 
 
 # =====================
