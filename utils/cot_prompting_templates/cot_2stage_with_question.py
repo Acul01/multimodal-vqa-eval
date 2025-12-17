@@ -12,6 +12,16 @@ to generate a more focused description that is relevant to the question.
 from typing import List, Dict, Optional
 
 
+def get_system_message_cot() -> Dict:
+    """
+    Returns the system message for CoT prompting.
+    """
+    return {
+        "role": "system",
+        "content": "You are a helpful assistant that analyzes images and answers questions about them. You will first describe what you see in the image, then answer questions based on your description.",
+    }
+
+
 def prompt_image_description_cot(
     prompt_mode: str = "zero",
     question: Optional[str] = None,
@@ -23,7 +33,7 @@ def prompt_image_description_cot(
 ):
     """
     Stage 1 of CoT: Generate a description of the image, considering the question.
-    Returns a conversation with image description prompt that includes the question.
+    Returns a conversation with system message and image description prompt that includes the question.
     
     Args:
         prompt_mode: Prompt mode (zero, 1shot, 3shot, 6shot)
@@ -36,6 +46,9 @@ def prompt_image_description_cot(
     """
     k = resolve_shot_count(prompt_mode) if resolve_shot_count else 0
     conversation: List[Dict] = []
+    
+    # Add system message
+    conversation.append(get_system_message_cot())
     
     # Few-shot examples for image description with question
     if task == "VQA-X" and question:

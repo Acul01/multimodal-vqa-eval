@@ -119,9 +119,10 @@ def generate_answer_cot_2stage(
     use_question_in_stage1: bool = False,
 ):
     """
-    CoT 2-Stage generation:
-    Stage 1: Generate image description (with image, optionally with question)
-    Stage 2: Answer question based on description (text only, no image)
+    CoT 2-Stage generation with proper message list building:
+    
+    Stage 1: [{system message}, {user message 1, image}] -> model -> assistant response 1 -> append
+    Stage 2: [{system message}, {user message 1, image}, {assistant response 1}, {user message 2}] -> model -> assistant response 2
     
     Args:
         use_question_in_stage1: If True, use Variant 2 (question in Stage 1), else Variant 1 (default)
@@ -129,8 +130,8 @@ def generate_answer_cot_2stage(
     Returns:
         text (str), token_entropy (Dict[str, float])
     """
-    # Stage 1: Generate image description
-    descr_conv = prompt_image_description_cot(
+    # Build initial message list for Stage 1: [{system message}, {user message 1, image}]
+    stage1_conv = prompt_image_description_cot(
         prompt_mode=prompt_mode,
         question=question,
         hypothesis=hypothesis,
@@ -138,34 +139,171 @@ def generate_answer_cot_2stage(
         task=task,
         use_question_in_stage1=use_question_in_stage1,
     )
-    description, _ = generate_answer(model, processor, image_path, descr_conv, max_new_tokens=60, device=device)
     
-    # Stage 2: Generate answer based on description
-    if task == "VQA-X":
-        question_conv_item = prompt_question_from_description_cot_vqax(description, question or "")
-    elif task == "ACT-X":
-        question_conv_item = prompt_question_from_description_cot_actx(description)
-    elif task == "ESNLI-VE":
-        question_conv_item = prompt_question_from_description_cot_esnlive(description, hypothesis or "")
-    elif task == "VCR":
-        question_conv_item = prompt_question_from_description_cot_vcr(description, question or "", choices or [])
-    else:
-        raise ValueError(f"Unknown task for CoT 2-stage: {task}")
+    # Stage 1: Generate image description
+    # Input: [{system message}, {user message 1, image}]
+    description, _ = generate_answer(model, processor, image_path, stage1_conv, max_new_tokens=60, device=device)
     
-    # Build conversation for stage 2: description + question (no image)
-    stage2_conv = descr_conv.copy()
-    # Add the description as assistant response
+    # Append assistant response 1 to message list
+    # Now we have: [{system message}, {user message 1, image}, {assistant response 1}]
+    stage2_conv = stage1_conv.copy()
     stage2_conv.append({
         "role": "assistant",
         "content": [{"type": "text", "text": description}],
     })
-    # Add the question as new user input
-    stage2_conv.append(question_conv_item)
     
-    # Generate answer (text only, no image)
-    answer, token_entropy = generate_answer_text_only(model, processor, stage2_conv, max_new_tokens=max_new_tokens, device=device)
+    # Stage 2: Generate answer based on description
+    # Build user message 2 (text only, no image)
+    if task == "VQA-X":
+        user_message_2 = prompt_question_from_description_cot_vqax(description, question or "")
+    elif task == "ACT-X":
+        user_message_2 = prompt_question_from_description_cot_actx(description)
+    elif task == "ESNLI-VE":
+        user_message_2 = prompt_question_from_description_cot_esnlive(description, hypothesis or "")
+    elif task == "VCR":
+        user_message_2 = prompt_question_from_description_cot_vcr(description, question or "", choices or [])
+    else:
+        raise ValueError(f"Unknown task for CoT 2-stage: {task}")
+    
+    # Append user message 2
+    # Now we have: [{system message}, {user message 1, image}, {assistant response 1}, {user message 2}]
+    stage2_conv.append(user_message_2)
+    
+    # Stage 2: Generate final answer
+    # Input: [{system message}, {user message 1, image}, {assistant response 1}, {user message 2}]
+    # Output: assistant response 2
+    answer, token_entropy = generate_answer_with_message_list(
+        model, processor, image_path, stage2_conv, max_new_tokens=max_new_tokens, device=device
+    )
     
     return answer, token_entropy
+
+
+def generate_answer_with_message_list(
+    model,
+    processor,
+    image_path: str,
+    conversation: List[Dict],
+    max_new_tokens: int = 40,
+    device: str = "cuda",
+):
+    """
+    Generate answer from a conversation message list that may already contain assistant responses.
+    This is used for Stage 2 where the conversation already includes the Stage 1 response.
+    
+    The conversation should have the structure:
+    [{system message}, {user message 1, image}, {assistant response 1}, {user message 2}]
+    
+    Returns:
+        text (str), token_entropy (Dict[str, float])
+    """
+    img = Image.open(image_path).convert("RGB")
+
+    # --------------------------------------------------
+    # Qwen3-VL-Zweig
+    # --------------------------------------------------
+    if _is_qwen_model(model):
+        # Convert conversation to messages format, preserving structure
+        messages = []
+        for item in conversation:
+            if item["role"] == "system":
+                messages.append({"role": "system", "content": item.get("content", "")})
+            elif item["role"] == "user":
+                # Extract text and image from user content
+                text_parts = []
+                has_image = False
+                for content_item in item.get("content", []):
+                    if content_item.get("type") == "text":
+                        text_parts.append(content_item.get("text", ""))
+                    elif content_item.get("type") == "image":
+                        has_image = True
+                
+                if has_image:
+                    # User message with image
+                    messages.append({
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": " ".join(text_parts)},
+                            {"type": "image", "image": img},
+                        ],
+                    })
+                else:
+                    # User message without image (text only)
+                    messages.append({"role": "user", "content": " ".join(text_parts)})
+            elif item["role"] == "assistant":
+                # Extract text from assistant content
+                text_parts = []
+                for content_item in item.get("content", []):
+                    if content_item.get("type") == "text":
+                        text_parts.append(content_item.get("text", ""))
+                if text_parts:
+                    messages.append({"role": "assistant", "content": " ".join(text_parts)})
+        
+        inputs = processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+        inputs = inputs.to(model.device)
+        input_len = inputs["input_ids"].shape[1]
+
+        with torch.inference_mode():
+            out = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                temperature=None,
+                eos_token_id=getattr(processor, "eos_token_id", None)
+                if hasattr(processor, "eos_token_id") else None,
+                output_scores=True,
+                return_dict_in_generate=True,
+            )
+
+        gen_only = out.sequences[0, input_len:]
+        text = processor.decode(gen_only, skip_special_tokens=True).strip()
+
+        token_entropy_all = extract_token_entropies(
+            out,
+            tokenizer=processor.tokenizer,
+            input_len=input_len,
+        )
+
+        return text, token_entropy_all
+
+    # --------------------------------------------------
+    # LLaVA-Zweig
+    # --------------------------------------------------
+    else:
+        # For LLaVA, we need to build the prompt from the conversation
+        # LLaVA expects a text prompt and an image
+        # We'll use the original image for the prompt
+        prompt = processor.apply_chat_template(conversation, add_generation_prompt=True)
+        inputs = processor(images=img, text=prompt, return_tensors="pt").to(device, torch.float16)
+        input_len = inputs["input_ids"].shape[1]
+
+        with torch.inference_mode():
+            out = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                temperature=None,
+                eos_token_id=processor.tokenizer.eos_token_id,
+                pad_token_id=processor.tokenizer.eos_token_id,
+                output_scores=True,
+                return_dict_in_generate=True,
+            )
+        gen_only = out.sequences[0, input_len:]
+        text = processor.decode(gen_only, skip_special_tokens=True).strip()
+
+        token_entropy_all = extract_token_entropies(
+            out,
+            tokenizer=processor.tokenizer,
+            input_len=input_len,
+        )
+
+        return text, token_entropy_all
 
 
 def generate_answer_text_only(
@@ -312,7 +450,31 @@ def generate_answer(
     # Qwen3-VL-Zweig
     # --------------------------------------------------
     if _is_qwen_model(model):
-        messages = _inject_image_into_messages(conversation, img)
+        # Convert conversation to messages format, preserving system messages
+        messages = []
+        for item in conversation:
+            if item["role"] == "system":
+                # System message
+                content = item.get("content", "")
+                if isinstance(content, list):
+                    # Extract text from content list
+                    text_parts = [c.get("text", "") for c in content if c.get("type") == "text"]
+                    content = " ".join(text_parts) if text_parts else ""
+                messages.append({"role": "system", "content": content})
+            elif item["role"] == "user":
+                # User message - will be processed by _inject_image_into_messages
+                messages.append(item)
+            elif item["role"] == "assistant":
+                # Assistant message
+                content = item.get("content", "")
+                if isinstance(content, list):
+                    text_parts = [c.get("text", "") for c in content if c.get("type") == "text"]
+                    content = " ".join(text_parts) if text_parts else ""
+                messages.append({"role": "assistant", "content": content})
+        
+        # Inject image into messages
+        messages = _inject_image_into_messages(messages, img)
+        
         inputs = processor.apply_chat_template(
             messages,
             tokenize=True,
@@ -360,6 +522,8 @@ def generate_answer(
     # LLaVA-Zweig
     # --------------------------------------------------
     else:
+        # LLaVA's apply_chat_template should handle system messages automatically
+        # Filter out system messages if needed, or let the processor handle them
         prompt = processor.apply_chat_template(conversation, add_generation_prompt=True)
         inputs = processor(images=img, text=prompt, return_tensors="pt").to(device, torch.float16)
         input_len = inputs["input_ids"].shape[1]

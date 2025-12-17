@@ -9,10 +9,20 @@ This variant uses a two-stage approach:
 from typing import List, Dict
 
 
+def get_system_message_cot() -> Dict:
+    """
+    Returns the system message for CoT prompting.
+    """
+    return {
+        "role": "system",
+        "content": "You are a helpful assistant that analyzes images and answers questions about them. You will first describe what you see in the image, then answer questions based on your description.",
+    }
+
+
 def prompt_image_description_cot(prompt_mode: str = "zero", resolve_shot_count=None, add_fewshot_examples=None):
     """
     Stage 1 of CoT: Generate a description of the image.
-    Returns a conversation with just the image description prompt.
+    Returns a conversation with system message and image description prompt.
     
     Args:
         prompt_mode: Prompt mode (zero, 1shot, 3shot, 6shot)
@@ -21,6 +31,9 @@ def prompt_image_description_cot(prompt_mode: str = "zero", resolve_shot_count=N
     """
     k = resolve_shot_count(prompt_mode) if resolve_shot_count else 0
     conversation: List[Dict] = []
+    
+    # Add system message
+    conversation.append(get_system_message_cot())
     
     # Few-shot examples for image description
     description_examples = [
