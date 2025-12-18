@@ -414,7 +414,13 @@ VCR_FEWSHOT_COT = [
 ]
 
 
-def prompt_vcr_expl(question: str, choices: List[str], prompt_mode: str, generation_mode: str = "posthoc"):
+def prompt_vcr_expl(
+    question: str,
+    choices: List[str],
+    prompt_mode: str,
+    generation_mode: str = "posthoc",
+    include_image: bool = True,
+):
     k = resolve_shot_count(prompt_mode)
     conversation: List[Dict] = []
 
@@ -423,14 +429,16 @@ def prompt_vcr_expl(question: str, choices: List[str], prompt_mode: str, generat
     if generation_mode == "cot":
         add_fewshot_examples(conversation, VCR_FEWSHOT_COT, k)
         instruction_block = (
-            "Given an IMAGE, a QUESTION and four options, analyze step by step and choose the correct answer in this format:\n"
+            ("Given an IMAGE, " if include_image else "Given NO IMAGE (text-only), ")
+            + "a QUESTION and four options, analyze step by step and choose the correct answer in this format:\n"
             "<explanation> Therefore, the answer is: <letter>\n"
             "Letter must be A, B, C, or D."
         )
     else:
         add_fewshot_examples(conversation, VCR_FEWSHOT, k)
         instruction_block = (
-            "Given an IMAGE, a QUESTION and four options, answer and explain in this format:\n"
+            ("Given an IMAGE, " if include_image else "Given NO IMAGE (text-only), ")
+            + "a QUESTION and four options, answer and explain in this format:\n"
             "<letter> because <explanation>\n"
             "Letter must be A, B, C, or D."
         )
@@ -444,13 +452,11 @@ def prompt_vcr_expl(question: str, choices: List[str], prompt_mode: str, generat
         f"D) {padded[3]}"
     )
 
-    conversation.append({
-        "role": "user",
-        "content": [
-            {"type": "text", "text": text},
-            {"type": "image"},
-        ],
-    })
+    user_content = [{"type": "text", "text": text}]
+    if include_image:
+        user_content.append({"type": "image"})
+
+    conversation.append({"role": "user", "content": user_content})
     return conversation
 
 

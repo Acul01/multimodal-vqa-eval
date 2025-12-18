@@ -553,6 +553,177 @@ def generate_answer(
         return text, token_entropy_all
 
 
+def generate_answer_text_only(
+    model,
+    processor,
+    conversation,
+    max_new_tokens: int = 40,
+    device: str = "cuda",
+):
+    """
+    Text-only generation (no image provided).
+    Useful for ablations like VCR --no_images.
+    Returns:
+        text (str), token_entropy (Dict[str, float])
+    """
+    # --------------------------------------------------
+    # Qwen3-VL-Zweig (text-only)
+    # --------------------------------------------------
+    if _is_qwen_model(model):
+        messages = []
+        for item in conversation:
+            if item["role"] == "system":
+                content = item.get("content", "")
+                if isinstance(content, list):
+                    text_parts = [c.get("text", "") for c in content if c.get("type") == "text"]
+                    content = " ".join(text_parts) if text_parts else ""
+                messages.append({"role": "system", "content": content})
+            elif item["role"] == "user":
+                text_parts = []
+                for content_item in item.get("content", []):
+                    if content_item.get("type") == "text":
+                        text_parts.append(content_item.get("text", ""))
+                messages.append({"role": "user", "content": " ".join(text_parts).strip()})
+            elif item["role"] == "assistant":
+                content = item.get("content", "")
+                if isinstance(content, list):
+                    text_parts = [c.get("text", "") for c in content if c.get("type") == "text"]
+                    content = " ".join(text_parts) if text_parts else ""
+                messages.append({"role": "assistant", "content": content})
+
+        inputs = processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+        inputs = inputs.to(model.device)
+        input_len = inputs["input_ids"].shape[1]
+
+        with torch.inference_mode():
+            out = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                temperature=None,
+                eos_token_id=getattr(processor, "eos_token_id", None)
+                if hasattr(processor, "eos_token_id") else None,
+                output_scores=True,
+                return_dict_in_generate=True,
+            )
+
+        gen_only = out.sequences[0, input_len:]
+        text = processor.decode(gen_only, skip_special_tokens=True).strip()
+
+        token_entropy_all = extract_token_entropies(
+            out,
+            tokenizer=processor.tokenizer,
+            input_len=input_len,
+        )
+
+        return text, token_entropy_all
+
+    # --------------------------------------------------
+    # LLaVA-Zweig (text-only)
+    # --------------------------------------------------
+    else:
+        prompt = processor.apply_chat_template(conversation, add_generation_prompt=True)
+        inputs = processor(text=prompt, return_tensors="pt").to(device, torch.float16)
+        input_len = inputs["input_ids"].shape[1]
+
+        with torch.inference_mode():
+            out = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                temperature=None,
+                eos_token_id=processor.tokenizer.eos_token_id,
+                pad_token_id=processor.tokenizer.eos_token_id,
+                output_scores=True,
+                return_dict_in_generate=True,
+            )
+
+        gen_only = out.sequences[0, input_len:]
+        text = processor.decode(gen_only, skip_special_tokens=True).strip()
+
+        token_entropy_all = extract_token_entropies(
+            out,
+            tokenizer=processor.tokenizer,
+            input_len=input_len,
+        )
+
+        return text, token_entropy_all
+
+
+def generate_answer_batch_text_only(
+    model,
+    processor,
+    conversations: List,
+    max_new_tokens: int = 40,
+    device: str = "cuda",
+):
+    """
+    Batch text-only generation.
+    Returns list of (text, token_entropy) tuples.
+    """
+    if _is_qwen_model(model):
+        # Qwen3-VL: do sequential (safe) but avoid any image processing
+        results = []
+        eos_token_id = getattr(processor, "eos_token_id", None) or processor.tokenizer.eos_token_id
+
+        # left padding for decoder-only
+        if hasattr(processor, "tokenizer") and hasattr(processor.tokenizer, "padding_side"):
+            original_padding_side = processor.tokenizer.padding_side
+            processor.tokenizer.padding_side = "left"
+
+        try:
+            for conv in conversations:
+                text, token_entropy = generate_answer_text_only(
+                    model, processor, conv, max_new_tokens=max_new_tokens, device=device
+                )
+                results.append((text, token_entropy))
+        finally:
+            if hasattr(processor, "tokenizer") and hasattr(processor.tokenizer, "padding_side"):
+                processor.tokenizer.padding_side = original_padding_side
+
+        return results
+
+    else:
+        # LLaVA: true batching with text-only processor call
+        prompts = [processor.apply_chat_template(conv, add_generation_prompt=True) for conv in conversations]
+        inputs = processor(text=prompts, return_tensors="pt", padding=True)
+        inputs = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+        input_len = inputs["input_ids"].shape[1]
+
+        with torch.inference_mode():
+            out = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                temperature=None,
+                eos_token_id=processor.tokenizer.eos_token_id,
+                pad_token_id=processor.tokenizer.eos_token_id,
+                output_scores=True,
+                return_dict_in_generate=True,
+            )
+
+        batch_size = out.sequences.shape[0]
+        results = []
+        for i in range(batch_size):
+            out_seq = out.sequences[i]
+            gen_only = out_seq[input_len:]
+            text = processor.decode(gen_only, skip_special_tokens=True).strip()
+
+            single_out = type("obj", (object,), {
+                "sequences": out_seq.unsqueeze(0),
+                "scores": tuple(s[i:i+1] for s in out.scores) if hasattr(out, "scores") and out.scores else None,
+            })()
+            token_entropy = extract_token_entropies(single_out, processor.tokenizer, input_len)
+            results.append((text, token_entropy))
+
+        return results
+
 # -----------------------------
 # Batch generation (returns list of (text, token_entropy) tuples)
 # -----------------------------
@@ -683,6 +854,7 @@ def run_vqa_task(
     max_tokens_pixelshap: Optional[int] = 3,
     batch_size: int = 1,
     cot_variant: str = "1",
+    no_images: bool = False,
 ):
     """
     Unified entry point for VQA-X, ACT-X, ESNLI-VE, VCR (answer+explanation).
@@ -707,12 +879,18 @@ def run_vqa_task(
     }
 
     ann_root_task = os.path.join(nle_root, ANN_DIR_MAP[task])
+
+    # For VCR ablations: allow running without images
+    require_image = True
+    if task == "VCR" and no_images:
+        require_image = False
+
     if task == "ESNLI-VE" and n_samples:
         # Important: ESNLI-VE loader may be slow due to recursive image search on network FS.
         # Apply the limit during loading to avoid scanning the full dataset.
-        dataset = load_esnlive(images_root, ann_root_task, split, require_image=True, max_samples=n_samples)
+        dataset = load_esnlive(images_root, ann_root_task, split, require_image=require_image, max_samples=n_samples)
     else:
-        dataset = loader_map[task](images_root, ann_root_task, split, require_image=True)
+        dataset = loader_map[task](images_root, ann_root_task, split, require_image=require_image)
         if n_samples:
             dataset = dataset[:n_samples]
 
@@ -767,45 +945,74 @@ def run_vqa_task(
                     if generation_mode == "cot":
                         batch_conversations.append(None)
                     else:
-                        batch_conversations.append(prompt_vcr_expl(s.question or "", s.choices or [], prompt_mode, generation_mode))
+                        batch_conversations.append(
+                            prompt_vcr_expl(
+                                s.question or "",
+                                s.choices or [],
+                                prompt_mode,
+                                generation_mode,
+                                include_image=(not no_images),
+                            )
+                        )
             
             # Generate answers in batch
             if generation_mode == "cot":
-                # CoT 2-stage: process sequentially (each sample needs 2 generations)
-                batch_results = []
-                for i, s in enumerate(batch_samples):
-                    if task == "VQA-X":
-                        (description, answer), token_entropy_raw = generate_answer_cot_2stage(
-                            model, processor, batch_paths[i], task, prompt_mode,
-                            question=s.question, max_new_tokens=40, device=device_str,
-                            use_question_in_stage1=(cot_variant == "2")
+                if task == "VCR" and no_images:
+                    # Text-only VCR ablation: no 2-stage image description possible
+                    convs = [
+                        prompt_vcr_expl(
+                            s.question or "",
+                            s.choices or [],
+                            prompt_mode,
+                            generation_mode,
+                            include_image=False,
                         )
-                    elif task == "ACT-X":
-                        (description, answer), token_entropy_raw = generate_answer_cot_2stage(
-                            model, processor, batch_paths[i], task, prompt_mode,
-                            max_new_tokens=40, device=device_str,
-                            use_question_in_stage1=(cot_variant == "2")
-                        )
-                    elif task == "ESNLI-VE":
-                        (description, answer), token_entropy_raw = generate_answer_cot_2stage(
-                            model, processor, batch_paths[i], task, prompt_mode,
-                            hypothesis=s.hypothesis, max_new_tokens=40, device=device_str,
-                            use_question_in_stage1=(cot_variant == "2")
-                        )
-                    elif task == "VCR":
-                        (description, answer), token_entropy_raw = generate_answer_cot_2stage(
-                            model, processor, batch_paths[i], task, prompt_mode,
-                            question=s.question or "", choices=s.choices or [],
-                            max_new_tokens=40, device=device_str,
-                            use_question_in_stage1=(cot_variant == "2")
-                        )
-                    # For CoT, we pass both description and answer to postprocessing
-                    batch_results.append(((description, answer), token_entropy_raw))
+                        for s in batch_samples
+                    ]
+                    batch_results = generate_answer_batch_text_only(
+                        model, processor, convs, max_new_tokens=40, device=device_str
+                    )
+                else:
+                    # CoT 2-stage: process sequentially (each sample needs 2 generations)
+                    batch_results = []
+                    for i, s in enumerate(batch_samples):
+                        if task == "VQA-X":
+                            (description, answer), token_entropy_raw = generate_answer_cot_2stage(
+                                model, processor, batch_paths[i], task, prompt_mode,
+                                question=s.question, max_new_tokens=40, device=device_str,
+                                use_question_in_stage1=(cot_variant == "2")
+                            )
+                        elif task == "ACT-X":
+                            (description, answer), token_entropy_raw = generate_answer_cot_2stage(
+                                model, processor, batch_paths[i], task, prompt_mode,
+                                max_new_tokens=40, device=device_str,
+                                use_question_in_stage1=(cot_variant == "2")
+                            )
+                        elif task == "ESNLI-VE":
+                            (description, answer), token_entropy_raw = generate_answer_cot_2stage(
+                                model, processor, batch_paths[i], task, prompt_mode,
+                                hypothesis=s.hypothesis, max_new_tokens=40, device=device_str,
+                                use_question_in_stage1=(cot_variant == "2")
+                            )
+                        elif task == "VCR":
+                            (description, answer), token_entropy_raw = generate_answer_cot_2stage(
+                                model, processor, batch_paths[i], task, prompt_mode,
+                                question=s.question or "", choices=s.choices or [],
+                                max_new_tokens=40, device=device_str,
+                                use_question_in_stage1=(cot_variant == "2")
+                            )
+                        # For CoT, we pass both description and answer to postprocessing
+                        batch_results.append(((description, answer), token_entropy_raw))
             else:
-                batch_results = generate_answer_batch(
-                    model, processor, batch_paths, batch_conversations,
-                    max_new_tokens=40, device=device_str
-                )
+                if task == "VCR" and no_images:
+                    batch_results = generate_answer_batch_text_only(
+                        model, processor, batch_conversations, max_new_tokens=40, device=device_str
+                    )
+                else:
+                    batch_results = generate_answer_batch(
+                        model, processor, batch_paths, batch_conversations,
+                        max_new_tokens=40, device=device_str
+                    )
             
             # Process each result in batch
             for i, (raw_pred_or_tuple, token_entropy_raw) in enumerate(batch_results):
@@ -816,12 +1023,17 @@ def run_vqa_task(
 
                 # Handle CoT vs post-hoc format
                 if generation_mode == "cot":
-                    # CoT: raw_pred_or_tuple is ((description, answer), token_entropy)
-                    description, answer = raw_pred_or_tuple
-                    print(f"Raw CoT Output - Description: {description}")
-                    print(f"Raw CoT Output - Answer: {answer}")
-                    raw_pred = answer  # Use answer for postprocessing
-                    cot_description = description  # Pass description separately
+                    if task == "VCR" and no_images:
+                        # Single-stage text-only (no description available)
+                        raw_pred = raw_pred_or_tuple
+                        cot_description = None
+                    else:
+                        # CoT: raw_pred_or_tuple is (description, answer)
+                        description, answer = raw_pred_or_tuple
+                        print(f"Raw CoT Output - Description: {description}")
+                        print(f"Raw CoT Output - Answer: {answer}")
+                        raw_pred = answer  # Use answer for postprocessing
+                        cot_description = description  # Pass description separately
                 else:
                     # Post-hoc: raw_pred_or_tuple is just (raw_pred, token_entropy)
                     # For batch processing, raw_pred_or_tuple is already the raw_pred string
@@ -975,6 +1187,7 @@ def run_vqa_task(
                 if task == "VCR":
                     result_dict["choices"] = getattr(s, "choices", [])
                     result_dict["sample_id"] = getattr(s, "sample_id", None)
+                    result_dict["no_images"] = bool(no_images)
                 
                 results.append(result_dict)
     else:
@@ -1204,17 +1417,42 @@ def run_vqa_task(
                 choices = s.choices or []
                 gt = s.answer or ""
                 if generation_mode == "cot":
-                    (description, answer), token_entropy_raw = generate_answer_cot_2stage(
-                        model, processor, s.image_path, task, prompt_mode,
-                        question=s.question or "", choices=choices,
-                        max_new_tokens=40, device=device_str,
-                        use_question_in_stage1=(cot_variant == "2")
-                    )
-                    raw_pred = answer
-                    cot_description = description
+                    if no_images:
+                        # Text-only VCR ablation: no 2-stage image description possible
+                        prompt = prompt_vcr_expl(
+                            s.question or "",
+                            choices,
+                            prompt_mode,
+                            generation_mode,
+                            include_image=False,
+                        )
+                        raw_pred, token_entropy_raw = generate_answer_text_only(
+                            model, processor, prompt, max_new_tokens=40, device=device_str
+                        )
+                        cot_description = None
+                    else:
+                        (description, answer), token_entropy_raw = generate_answer_cot_2stage(
+                            model, processor, s.image_path, task, prompt_mode,
+                            question=s.question or "", choices=choices,
+                            max_new_tokens=40, device=device_str,
+                            use_question_in_stage1=(cot_variant == "2")
+                        )
+                        raw_pred = answer
+                        cot_description = description
                 else:
-                    prompt = prompt_vcr_expl(s.question or "", choices, prompt_mode, generation_mode)
-                    raw_pred, token_entropy_raw = generate_answer(model, processor, s.image_path, prompt)
+                    prompt = prompt_vcr_expl(
+                        s.question or "",
+                        choices,
+                        prompt_mode,
+                        generation_mode,
+                        include_image=(not no_images),
+                    )
+                    if no_images:
+                        raw_pred, token_entropy_raw = generate_answer_text_only(
+                            model, processor, prompt, max_new_tokens=40, device=device_str
+                        )
+                    else:
+                        raw_pred, token_entropy_raw = generate_answer(model, processor, s.image_path, prompt)
                     cot_description = None
                 print(f"[DEBUG run_vqa_task VCR] raw_pred: {repr(raw_pred)}")
                 print(f"[DEBUG run_vqa_task VCR] gt: {repr(gt)}")
@@ -1278,6 +1516,7 @@ def run_vqa_task(
                 result_dict["choices"] = choices
                 # Add sample_id for VCR to enable unique mapping (multiple questions per image)
                 result_dict["sample_id"] = getattr(s, "sample_id", None)
+                result_dict["no_images"] = bool(no_images)
             results.append(result_dict)
 
     valid_hits = [r["correct"] for r in results if r["correct"] is not None]

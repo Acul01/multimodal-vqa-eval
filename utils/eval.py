@@ -360,6 +360,7 @@ def evaluate_vcr_to_csv(
     save_dir: str = "results",
     save_name: Optional[str] = None,
     prompt_mode: Optional[str] = None,
+    no_images: bool = False,
 ) -> str:
     """
     Save VCR results as CSV with:
@@ -471,6 +472,7 @@ def evaluate_vcr_to_csv(
         overlays_str = json.dumps(overlays) if overlays is not None else None
 
         rows.append({
+            "no_images": bool(r.get("no_images", no_images)),
             "image_name": info.get("image_name", base),
             "question": question or info.get("question", ""),
             "gt_answer": gt_ans,
@@ -484,6 +486,7 @@ def evaluate_vcr_to_csv(
         })
 
     df = pd.DataFrame(rows, columns=[
+        "no_images",
         "image_name",
         "question",
         "gt_answer",
@@ -678,6 +681,7 @@ def evaluate_vcr_answers_only_to_csv(
     split: str = "val",
     save_dir: str = "results",
     save_name: Optional[str] = None,
+    no_images: bool = False,
 ) -> str:
     """
     Save VCR results (answers only) as CSV.
@@ -703,6 +707,7 @@ def evaluate_vcr_answers_only_to_csv(
         ) if isinstance(options, dict) else str(options)
 
         rows.append({
+            "no_images": bool(r.get("no_images", no_images)),
             "image_name": image_name,
             "question": r.get("question", ""),
             "gt_answer": r.get("gt_answer", None),
@@ -712,6 +717,7 @@ def evaluate_vcr_answers_only_to_csv(
         })
 
     df = pd.DataFrame(rows, columns=[
+        "no_images",
         "image_name",
         "question",
         "options",

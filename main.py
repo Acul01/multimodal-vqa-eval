@@ -85,6 +85,11 @@ def parse_args():
         help="For VCR task: use images with bounding boxes (from images/vcr1images_with_boxes/vcr1images/) instead of original images (from images/vcr1images/).",
     )
     parser.add_argument(
+        "--no_images",
+        action="store_true",
+        help="For VCR task: do NOT use images. Run text-only prompting with question + options only.",
+    )
+    parser.add_argument(
         "--cot_variant",
         type=str,
         default="1",
@@ -275,6 +280,7 @@ def main():
             generation_mode=args.generation_mode,
             batch_size=args.batch_size,
             cot_variant=args.cot_variant,
+            no_images=args.no_images,
             )
     else:
         # answers only → aktuelle noEx-Version kennt kein prompt_mode
@@ -328,6 +334,7 @@ def main():
                 split=args.split,
                 save_dir=model_results_dir,
                 prompt_mode=args.prompt_mode,
+                no_images=args.no_images,
             )
         else:
             out_csv = None
@@ -360,6 +367,7 @@ def main():
                 os.path.join(nle_root, "VCR"),
                 split=args.split,
                 save_dir=model_results_dir,
+                no_images=args.no_images,
             )
         else:
             out_csv = None
