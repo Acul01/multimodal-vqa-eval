@@ -258,11 +258,19 @@ def load_esnlive(
     results: List[ESNLIVEExample] = []
     img_dir = os.path.join(images_root, "flickr30k")
 
+    # Fail fast: otherwise per-sample recursive search can look like a "hang" on network filesystems
+    if require_image and not os.path.isdir(img_dir):
+        raise FileNotFoundError(
+            f"e-SNLI-VE images directory not found: {img_dir}\n"
+            f"Expected Flickr30k images under: <images_root>/flickr30k/ ."
+        )
+
     for ex in examples:
         img_name = _first_nonempty(ex.get("image_name"), ex.get("image"), ex.get("filename")) or ""
         img_path = os.path.join(img_dir, img_name) if img_name else ""
         if img_name and not os.path.exists(img_path):
-            alt = _search_recursively(img_dir, img_name) or _search_recursively(images_root, img_name)
+            # Only search inside flickr30k/ to avoid scanning the whole images_root (very slow on clusters)
+            alt = _search_recursively(img_dir, os.path.basename(img_name))
             if alt:
                 img_path = alt
 
