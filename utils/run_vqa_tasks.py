@@ -707,9 +707,14 @@ def run_vqa_task(
     }
 
     ann_root_task = os.path.join(nle_root, ANN_DIR_MAP[task])
-    dataset = loader_map[task](images_root, ann_root_task, split, require_image=True)
-    if n_samples:
-        dataset = dataset[:n_samples]
+    if task == "ESNLI-VE" and n_samples:
+        # Important: ESNLI-VE loader may be slow due to recursive image search on network FS.
+        # Apply the limit during loading to avoid scanning the full dataset.
+        dataset = load_esnlive(images_root, ann_root_task, split, require_image=True, max_samples=n_samples)
+    else:
+        dataset = loader_map[task](images_root, ann_root_task, split, require_image=True)
+        if n_samples:
+            dataset = dataset[:n_samples]
 
     print(f"Running {task} on {len(dataset)} samples with prompt_mode='{prompt_mode}', generation_mode='{generation_mode}' and batch_size={batch_size}...")
     

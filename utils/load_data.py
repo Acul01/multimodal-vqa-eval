@@ -239,6 +239,7 @@ def load_esnlive(
     ann_root: str,
     split: str = "train",
     require_image: bool = True,
+    max_samples: Optional[int] = None,
 ) -> List[ESNLIVEExample]:
     split = split.lower()
     if split in ("val", "valid", "validation"):
@@ -278,6 +279,9 @@ def load_esnlive(
             sample_id=str(ex.get("image_name") or ex.get("id") or ""),
             raw=ex,
         ))
+
+        if max_samples is not None and len(results) >= max_samples:
+            break
     return results
 
 # -----------------------------------------------------------------------------
