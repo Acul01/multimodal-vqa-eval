@@ -381,7 +381,9 @@ def load_vcr(
 
         img_path = os.path.join(vcr_root, img_rel) if img_rel else ""
 
-        if img_rel and not os.path.exists(img_path):
+        # IMPORTANT: Recursive search over vcr1images is extremely expensive and can look like a "hang"
+        # on network filesystems. Only do it when images are actually required.
+        if require_image and img_rel and not os.path.exists(img_path):
             # Fallback: recursively search by basename
             alt = _search_recursively(vcr_root, os.path.basename(img_rel))
             if alt:
