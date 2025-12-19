@@ -245,8 +245,8 @@ def generate_answer_with_message_list(
                         ],
                     })
                 else:
-                    # User message without image (text only)
-                    messages.append({"role": "user", "content": " ".join(text_parts)})
+                    # User message without image (text only) - must be list format for Qwen3-VL
+                    messages.append({"role": "user", "content": [{"type": "text", "text": " ".join(text_parts)}]})
             elif item["role"] == "assistant":
                 # Extract text from assistant content
                 text_parts = []
@@ -506,6 +506,29 @@ def generate_answer(
                 if not isinstance(content, list):
                     # Convert string to list format
                     msg["content"] = [{"type": "text", "text": str(content)}]
+                else:
+                    # Ensure all items in content list are dicts with "type" key
+                    normalized_content = []
+                    for item in content:
+                        if isinstance(item, dict):
+                            normalized_content.append(item)
+                        elif isinstance(item, str):
+                            normalized_content.append({"type": "text", "text": item})
+                        else:
+                            normalized_content.append({"type": "text", "text": str(item)})
+                    msg["content"] = normalized_content
+        
+        # Debug: verify all messages have correct format
+        for i, msg in enumerate(messages):
+            if msg.get("role") == "user":
+                content = msg.get("content", [])
+                if not isinstance(content, list):
+                    raise ValueError(f"Message {i} has non-list content: {type(content)} - {content}")
+                for j, item in enumerate(content):
+                    if not isinstance(item, dict):
+                        raise ValueError(f"Message {i}, content item {j} is not a dict: {type(item)} - {item}")
+                    if "type" not in item:
+                        raise ValueError(f"Message {i}, content item {j} missing 'type' key: {item}")
         
         inputs = processor.apply_chat_template(
             messages,
