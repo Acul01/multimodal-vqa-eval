@@ -86,18 +86,33 @@ def _inject_image_into_messages(messages, pil_image: Image.Image):
     """
     Return a deep-copied messages list where the LAST {'type':'image'} placeholder
     is replaced by {'type':'image', 'image': pil_image}.
+    
+    Ensures all user messages have list-formatted content for Qwen3-VL compatibility.
     """
     msgs = copy.deepcopy(messages)
+    
+    # Normalize user messages to ensure content is always a list
+    for turn in msgs:
+        if turn.get("role") == "user":
+            content = turn.get("content", [])
+            if isinstance(content, str):
+                turn["content"] = [{"type": "text", "text": content}]
+            elif not isinstance(content, list):
+                turn["content"] = [{"type": "text", "text": str(content)}]
+    
+    # Find and inject image into the last user message
     for turn in reversed(msgs):
         if turn.get("role") == "user" and isinstance(turn.get("content"), list):
+            # Check if there's already an image placeholder
             for item in turn["content"]:
                 if isinstance(item, dict) and item.get("type") == "image":
                     item["image"] = pil_image
                     return msgs
-    for turn in reversed(msgs):
-        if turn.get("role") == "user" and isinstance(turn.get("content"), list):
+            # No image placeholder found, append one
             turn["content"].append({"type": "image", "image": pil_image})
             return msgs
+    
+    # No user message found, add one
     msgs.append({"role": "user", "content": [{"type": "image", "image": pil_image}]})
     return msgs
 
