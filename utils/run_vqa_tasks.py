@@ -464,8 +464,15 @@ def generate_answer(
                     content = " ".join(text_parts) if text_parts else ""
                 messages.append({"role": "system", "content": content})
             elif item["role"] == "user":
-                # User message - will be processed by _inject_image_into_messages
-                messages.append(item)
+                # User message - ensure content is a list format for Qwen3-VL
+                user_content = item.get("content", [])
+                if isinstance(user_content, str):
+                    # Convert string to list format
+                    user_content = [{"type": "text", "text": user_content}]
+                elif not isinstance(user_content, list):
+                    # Fallback: wrap in list
+                    user_content = [{"type": "text", "text": str(user_content)}]
+                messages.append({"role": "user", "content": user_content})
             elif item["role"] == "assistant":
                 # Assistant message
                 content = item.get("content", "")
