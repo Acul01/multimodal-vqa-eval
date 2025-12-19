@@ -11,7 +11,7 @@ The script will prompt you to enter the path to the CSV file.
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List
+from typing import Dict, List, Tuple
 import os
 
 try:
@@ -97,7 +97,7 @@ def calculate_rouge_scores(
     csv_path: str,
     gt_column: str = "gt_explanation",
     gen_column: str = "generated_explanation",
-) -> Dict[str, Dict[str, float]]:
+) -> Tuple[Dict[str, Dict[str, float]], pd.DataFrame, str]:
     """
     Calculate ROUGE scores between ground truth and generated explanations.
     
@@ -107,7 +107,10 @@ def calculate_rouge_scores(
         gen_column: Name of the generated explanation column
     
     Returns:
-        Dictionary with ROUGE-1, ROUGE-2, and ROUGE-L scores (precision, recall, f1)
+        Tuple of:
+        - Dictionary with average ROUGE-1, ROUGE-2, and ROUGE-L scores (precision, recall, f1)
+        - DataFrame with original data + ROUGE score columns
+        - Path to saved CSV file with ROUGE scores
     """
     # Resolve CSV path
     resolved_path = resolve_csv_path(csv_path)
@@ -132,7 +135,12 @@ def calculate_rouge_scores(
     # Initialize ROUGE scorer
     scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
     
-    # Calculate ROUGE scores for each pair
+    # Initialize lists for per-sample scores
+    rouge1_f1_list = []
+    rouge2_f1_list = []
+    rougeL_f1_list = []
+    
+    # Lists for average calculation
     rouge1_scores = []
     rouge2_scores = []
     rougeL_scores = []
@@ -140,66 +148,90 @@ def calculate_rouge_scores(
     valid_pairs = 0
     skipped = 0
     
+    # Calculate ROUGE scores for each row
     for idx, row in df.iterrows():
         gt_text = str(row[gt_column]) if pd.notna(row[gt_column]) else ""
         gen_text = str(row[gen_column]) if pd.notna(row[gen_column]) else ""
         
         # Skip if either text is empty
         if not gt_text.strip() or not gen_text.strip():
+            rouge1_f1_list.append(np.nan)
+            rouge2_f1_list.append(np.nan)
+            rougeL_f1_list.append(np.nan)
             skipped += 1
             continue
         
         # Calculate ROUGE scores
         scores = scorer.score(gt_text, gen_text)
         
+        # Extract F1 scores for this sample
+        rouge1_f1 = scores['rouge1'].fmeasure
+        rouge2_f1 = scores['rouge2'].fmeasure
+        rougeL_f1 = scores['rougeL'].fmeasure
+        
+        rouge1_f1_list.append(rouge1_f1)
+        rouge2_f1_list.append(rouge2_f1)
+        rougeL_f1_list.append(rougeL_f1)
+        
+        # Store for average calculation
         rouge1_scores.append({
             'precision': scores['rouge1'].precision,
             'recall': scores['rouge1'].recall,
-            'f1': scores['rouge1'].fmeasure,
+            'f1': rouge1_f1,
         })
         rouge2_scores.append({
             'precision': scores['rouge2'].precision,
             'recall': scores['rouge2'].recall,
-            'f1': scores['rouge2'].fmeasure,
+            'f1': rouge2_f1,
         })
         rougeL_scores.append({
             'precision': scores['rougeL'].precision,
             'recall': scores['rougeL'].recall,
-            'f1': scores['rougeL'].fmeasure,
+            'f1': rougeL_f1,
         })
         
         valid_pairs += 1
     
+    # Add ROUGE score columns to DataFrame
+    df['Rouge-1'] = rouge1_f1_list
+    df['Rouge-2'] = rouge2_f1_list
+    df['Rouge-L'] = rougeL_f1_list
+    
     # Calculate average scores
     if valid_pairs == 0:
         print(f"Warning: No valid pairs found! Skipped {skipped} rows with empty explanations.")
-        return {
+        avg_results = {
             'rouge1': {'precision': 0.0, 'recall': 0.0, 'f1': 0.0},
             'rouge2': {'precision': 0.0, 'recall': 0.0, 'f1': 0.0},
             'rougeL': {'precision': 0.0, 'recall': 0.0, 'f1': 0.0},
         }
-    
-    results = {
-        'rouge1': {
-            'precision': np.mean([s['precision'] for s in rouge1_scores]),
-            'recall': np.mean([s['recall'] for s in rouge1_scores]),
-            'f1': np.mean([s['f1'] for s in rouge1_scores]),
-        },
-        'rouge2': {
-            'precision': np.mean([s['precision'] for s in rouge2_scores]),
-            'recall': np.mean([s['recall'] for s in rouge2_scores]),
-            'f1': np.mean([s['f1'] for s in rouge2_scores]),
-        },
-        'rougeL': {
-            'precision': np.mean([s['precision'] for s in rougeL_scores]),
-            'recall': np.mean([s['recall'] for s in rougeL_scores]),
-            'f1': np.mean([s['f1'] for s in rougeL_scores]),
-        },
-    }
+    else:
+        avg_results = {
+            'rouge1': {
+                'precision': np.mean([s['precision'] for s in rouge1_scores]),
+                'recall': np.mean([s['recall'] for s in rouge1_scores]),
+                'f1': np.mean([s['f1'] for s in rouge1_scores]),
+            },
+            'rouge2': {
+                'precision': np.mean([s['precision'] for s in rouge2_scores]),
+                'recall': np.mean([s['recall'] for s in rouge2_scores]),
+                'f1': np.mean([s['f1'] for s in rouge2_scores]),
+            },
+            'rougeL': {
+                'precision': np.mean([s['precision'] for s in rougeL_scores]),
+                'recall': np.mean([s['recall'] for s in rougeL_scores]),
+                'f1': np.mean([s['f1'] for s in rougeL_scores]),
+            },
+        }
     
     print(f"\nProcessed {valid_pairs} valid pairs (skipped {skipped} rows with empty explanations)")
     
-    return results
+    # Save extended CSV
+    output_path = resolved_path.rsplit('.', 1)[0] + '_with_rouge.csv'
+    df.to_csv(output_path, index=False)
+    print(f"\nSaved extended CSV with ROUGE scores to: {output_path}")
+    
+    return avg_results, df, output_path
 
 
 def print_rouge_results(results: Dict[str, Dict[str, float]]):
@@ -245,14 +277,15 @@ def main():
     print(f"DEBUG PATH: {csv_path}")
     
     try:
-        results = calculate_rouge_scores(csv_path)
-        print_rouge_results(results)
+        avg_results, df_extended, output_path = calculate_rouge_scores(csv_path)
+        print_rouge_results(avg_results)
         
         # Also print summary
         print(f"\nSummary:")
-        print(f"  ROUGE-1 F1: {results['rouge1']['f1']:.4f}")
-        print(f"  ROUGE-2 F1: {results['rouge2']['f1']:.4f}")
-        print(f"  ROUGE-L F1: {results['rougeL']['f1']:.4f}")
+        print(f"  ROUGE-1 F1: {avg_results['rouge1']['f1']:.4f}")
+        print(f"  ROUGE-2 F1: {avg_results['rouge2']['f1']:.4f}")
+        print(f"  ROUGE-L F1: {avg_results['rougeL']['f1']:.4f}")
+        print(f"\nExtended CSV saved to: {output_path}")
         
     except Exception as e:
         print(f"Error: {e}")
