@@ -292,6 +292,7 @@ def main():
             nle_root,
             split=args.split,
             n_samples=args.n_samples,
+            no_images=args.no_images,
         )
 
     # -------------------------

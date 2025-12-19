@@ -464,58 +464,62 @@ def prompt_vcr_expl(
 # Answer Only
 # ============
 
-def prompt_vqax_answer_only(question: str):
+def prompt_vqax_answer_only(question: str, include_image: bool = True):
     instructions = (
-        "Given an IMAGE and a QUESTION, answer in this format:\n"
+        ("Given an IMAGE and a QUESTION" if include_image else "Given NO IMAGE (text-only) and a QUESTION")
+        + ", answer in this format:\n"
         "<answer>\n"
         "Use at most three words and do not add any explanation."
         f"Question: {question}"
     )
+    user_content = [{"type": "text", "text": instructions}]
+    if include_image:
+        user_content.append({"type": "image"})
     return [{
         "role": "user",
-        "content": [
-            {"type": "text", "text": instructions},
-            {"type": "image"},
-        ],
+        "content": user_content,
     }]
 
 
-def prompt_actx_answer_only():
+def prompt_actx_answer_only(include_image: bool = True):
     instructions = (
-        "Given an IMAGE, identify the activity in this format:\n"
+        ("Given an IMAGE" if include_image else "Given NO IMAGE (text-only)")
+        + ", identify the activity in this format:\n"
         "<activity>\n"
         "Use at most two words and do not add any explanation."
     )
+    user_content = [{"type": "text", "text": instructions}]
+    if include_image:
+        user_content.append({"type": "image"})
     return [{
         "role": "user",
-        "content": [
-            {"type": "text", "text": instructions},
-            {"type": "image"},
-        ],
+        "content": user_content,
     }]
 
 
-def prompt_esnlive_answer_only(hypothesis: str):
+def prompt_esnlive_answer_only(hypothesis: str, include_image: bool = True):
     instructions = (
-        "Given an IMAGE and a HYPOTHESIS, classify the relation in this format:\n"
+        ("Given an IMAGE and a HYPOTHESIS" if include_image else "Given NO IMAGE (text-only) and a HYPOTHESIS")
+        + ", classify the relation in this format:\n"
         "<label>\n"
         "Label must be exactly one of: entailment, contradiction, neutral.\n"
         "Use only the label and do not add any explanation."
         f"Hypothesis: {hypothesis}"
     )
+    user_content = [{"type": "text", "text": instructions}]
+    if include_image:
+        user_content.append({"type": "image"})
     return [{
         "role": "user",
-        "content": [
-            {"type": "text", "text": instructions},
-            {"type": "image"},
-        ],
+        "content": user_content,
     }]
 
 
-def prompt_vcr_answer_only(question: str, choices: List[str]):
+def prompt_vcr_answer_only(question: str, choices: List[str], include_image: bool = True):
     padded = (choices + ["missing"] * 4)[:4]
     instructions = (
-        "Given an IMAGE, a QUESTION and four options, choose the correct answer in this format:\n"
+        ("Given an IMAGE, a QUESTION and four options" if include_image else "Given NO IMAGE (text-only), a QUESTION and four options")
+        + ", choose the correct answer in this format:\n"
         "<letter>\n"
         "Letter must be A, B, C, or D."
         "Use only the letter and do not add any explanation."
@@ -528,10 +532,10 @@ def prompt_vcr_answer_only(question: str, choices: List[str]):
         f"C) {padded[2]}\n"
         f"D) {padded[3]}"
     )
+    user_content = [{"type": "text", "text": text}]
+    if include_image:
+        user_content.append({"type": "image"})
     return [{
         "role": "user",
-        "content": [
-            {"type": "text", "text": text},
-            {"type": "image"},
-        ],
+        "content": user_content,
     }]
