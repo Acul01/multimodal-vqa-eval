@@ -22,6 +22,61 @@ except ImportError:
     exit(1)
 
 
+def resolve_csv_path(csv_path: str) -> str:
+    """
+    Resolve CSV path by trying multiple possible locations.
+    
+    Tries:
+    1. Direct path (absolute or relative to current working directory)
+    2. Relative to current working directory
+    3. Relative to common workspace roots (if running on cluster)
+    
+    Args:
+        csv_path: Input path (may be relative or absolute)
+    
+    Returns:
+        Resolved absolute path
+    
+    Raises:
+        FileNotFoundError: If file cannot be found
+    """
+    # Try direct path first
+    if os.path.isabs(csv_path) and os.path.exists(csv_path):
+        return csv_path
+    
+    # Try relative to current working directory
+    cwd_path = os.path.abspath(os.path.join(os.getcwd(), csv_path))
+    if os.path.exists(cwd_path):
+        return cwd_path
+    
+    # Try relative to common cluster paths
+    possible_roots = [
+        "/netscratch/lrippe/",
+        "/netscratch/lrippe/project_scripts/",
+        os.path.expanduser("~"),
+    ]
+    
+    for root in possible_roots:
+        if os.path.exists(root):
+            test_path = os.path.abspath(os.path.join(root, csv_path))
+            if os.path.exists(test_path):
+                return test_path
+    
+    # If still not found, try removing leading path components if it looks like a full path
+    # e.g., "project_scripts/multimodal_vqa_eval/..." -> try from /netscratch/lrippe/
+    path_parts = csv_path.split(os.sep)
+    if len(path_parts) > 1:
+        # Try from /netscratch/lrippe/ with the full path
+        cluster_root = "/netscratch/lrippe/"
+        if os.path.exists(cluster_root):
+            test_path = os.path.join(cluster_root, csv_path)
+            if os.path.exists(test_path):
+                return os.path.abspath(test_path)
+    
+    # Last resort: return the path as-is (will raise error if not found)
+    return os.path.abspath(csv_path)
+
+
 def calculate_rouge_scores(
     csv_path: str,
     gt_column: str = "gt_explanation",
@@ -38,11 +93,19 @@ def calculate_rouge_scores(
     Returns:
         Dictionary with ROUGE-1, ROUGE-2, and ROUGE-L scores (precision, recall, f1)
     """
-    # Load CSV
-    if not os.path.exists(csv_path):
-        raise FileNotFoundError(f"CSV file not found: {csv_path}")
+    # Resolve CSV path
+    resolved_path = resolve_csv_path(csv_path)
     
-    df = pd.read_csv(csv_path)
+    # Load CSV
+    if not os.path.exists(resolved_path):
+        raise FileNotFoundError(
+            f"CSV file not found: {csv_path}\n"
+            f"Resolved to: {resolved_path}\n"
+            f"Current working directory: {os.getcwd()}"
+        )
+    
+    print(f"DEBUG: Using resolved path: {resolved_path}")
+    df = pd.read_csv(resolved_path)
     
     # Check if columns exist
     if gt_column not in df.columns:
@@ -160,6 +223,10 @@ def main():
     
     print(f"\nLoading CSV file: {csv_path}")
     print(f"Calculating ROUGE scores between 'gt_explanation' and 'generated_explanation'...")
+    
+    # Debug: print current working directory
+    print(f"DEBUG: Current working directory: {os.getcwd()}")
+    print(f"DEBUG PATH: {csv_path}")
     
     try:
         results = calculate_rouge_scores(csv_path)
