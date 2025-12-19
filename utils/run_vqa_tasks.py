@@ -1356,6 +1356,10 @@ def run_vqa_task(
                     "prompt_mode": prompt_mode,
                     "token_entropy": token_entropy,
                     "pixelshap_overlays": pixelshap_paths,
+                    # Store parsed answer and explanation separately for CSV evaluation
+                    "pred_answer": pred_only,
+                    "pred_explanation": expl,
+                    "generation_mode": generation_mode,
                 }
                 if task == "VCR":
                     result_dict["choices"] = getattr(s, "choices", [])

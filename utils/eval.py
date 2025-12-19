@@ -74,7 +74,13 @@ def _normalize_answer(s: Optional[str]) -> str:
     return normalize_answer(s or "")
 
 
-def _split_pred_expl(text: str, task: str = "VQA-X", vcr_choices: Optional[list] = None) -> Tuple[str, str]:
+def _split_pred_expl(
+    text: str, 
+    task: str = "VQA-X", 
+    vcr_choices: Optional[list] = None,
+    generation_mode: Optional[str] = None,
+    description: Optional[str] = None,
+) -> Tuple[str, str]:
     """
     Split prediction into answer and explanation using unified postprocessing.
     
@@ -82,6 +88,8 @@ def _split_pred_expl(text: str, task: str = "VQA-X", vcr_choices: Optional[list]
         text: Raw prediction text
         task: Task type for task-specific processing
         vcr_choices: For VCR task, list of choice texts
+        generation_mode: "posthoc" or "cot" - if None, tries to infer from text
+        description: For CoT mode, the Stage 1 description (explanation)
     
     Returns:
         Tuple of (answer, explanation)
@@ -89,7 +97,13 @@ def _split_pred_expl(text: str, task: str = "VQA-X", vcr_choices: Optional[list]
     if not isinstance(text, str):
         return "", ""
     
-    result = postprocess_prediction(text, task, vcr_choices=vcr_choices)
+    result = postprocess_prediction(
+        text, 
+        task, 
+        vcr_choices=vcr_choices,
+        generation_mode=generation_mode or "posthoc",
+        description=description,
+    )
     return result["answer"], result["explanation"]
 
 
@@ -132,7 +146,20 @@ def evaluate_vqax_to_csv(
         gt_info = gt_by_path.get(key, {"gt_expl": "", "image_id": None})
 
         pred_full = r.get("prediction", "") or ""
-        pred_answer, pred_expl = _split_pred_expl(pred_full, "VQA-X")
+        # Use pre-parsed values if available (from CoT processing)
+        if "pred_answer" in r and "pred_explanation" in r:
+            pred_answer = r.get("pred_answer", "")
+            pred_expl = r.get("pred_explanation", "")
+        else:
+            # Fallback to parsing (for backward compatibility)
+            generation_mode = r.get("generation_mode", "posthoc")
+            description = r.get("description", None)  # For CoT
+            pred_answer, pred_expl = _split_pred_expl(
+                pred_full, 
+                "VQA-X",
+                generation_mode=generation_mode,
+                description=description,
+            )
         gt_answer = r.get("ground_truth", "") or ""
 
         correct = int(_normalize_answer(pred_answer) == _normalize_answer(gt_answer))
@@ -210,9 +237,22 @@ def evaluate_actx_to_csv(
         info = gt_by_path.get(key, {"gt_expl": "", "image_id": None, "gt_label": ""})
 
         pred_full = r.get("prediction", "") or ""
-        pred_answer, pred_expl = _split_pred_expl(pred_full, "ACT-X")
-        pred_answer = pred_answer.lower()
-        pred_expl = pred_expl.lower()
+        # Use pre-parsed values if available (from CoT processing)
+        if "pred_answer" in r and "pred_explanation" in r:
+            pred_answer = r.get("pred_answer", "").lower()
+            pred_expl = r.get("pred_explanation", "").lower()
+        else:
+            # Fallback to parsing (for backward compatibility)
+            generation_mode = r.get("generation_mode", "posthoc")
+            description = r.get("description", None)  # For CoT
+            pred_answer, pred_expl = _split_pred_expl(
+                pred_full, 
+                "ACT-X",
+                generation_mode=generation_mode,
+                description=description,
+            )
+            pred_answer = pred_answer.lower()
+            pred_expl = pred_expl.lower()
 
         gt_label = r.get("ground_truth", "") or info.get("gt_label", "")
         correct = int(_normalize_answer(pred_answer) == _normalize_answer(gt_label))
@@ -307,9 +347,22 @@ def evaluate_esnlive_to_csv(
             )
 
         pred_full = r.get("prediction", "") or ""
-        gen_label, gen_expl = _split_pred_expl(pred_full, "ESNLI-VE")
-        gen_label = gen_label.lower().strip()
-        gen_expl = gen_expl.lower().strip()
+        # Use pre-parsed values if available (from CoT processing)
+        if "pred_answer" in r and "pred_explanation" in r:
+            gen_label = r.get("pred_answer", "").lower().strip()
+            gen_expl = r.get("pred_explanation", "").lower().strip()
+        else:
+            # Fallback to parsing (for backward compatibility)
+            generation_mode = r.get("generation_mode", "posthoc")
+            description = r.get("description", None)  # For CoT
+            gen_label, gen_expl = _split_pred_expl(
+                pred_full, 
+                "ESNLI-VE",
+                generation_mode=generation_mode,
+                description=description,
+            )
+            gen_label = gen_label.lower().strip()
+            gen_expl = gen_expl.lower().strip()
         gt_label = (r.get("ground_truth") or info.get("gt_label") or "").strip()
 
         correct = int(_norm(gen_label) == _norm(gt_label)) if gt_label else 0
@@ -433,9 +486,23 @@ def evaluate_vcr_to_csv(
         # Use choices from info (correctly mapped GT data) if available, otherwise from results
         # This ensures we use the choices that match the question
         choices = info.get("choices", []) or r.get("choices", [])
-        gen_ans, gen_expl = _split_pred_expl(gen_full, "VCR", vcr_choices=choices)
-        gen_ans = gen_ans.lower().strip()
-        gen_expl = gen_expl.lower().strip()
+        # Use pre-parsed values if available (from CoT processing)
+        if "pred_answer" in r and "pred_explanation" in r:
+            gen_ans = r.get("pred_answer", "").lower().strip()
+            gen_expl = r.get("pred_explanation", "").lower().strip()
+        else:
+            # Fallback to parsing (for backward compatibility)
+            generation_mode = r.get("generation_mode", "posthoc")
+            description = r.get("description", None)  # For CoT
+            gen_ans, gen_expl = _split_pred_expl(
+                gen_full, 
+                "VCR", 
+                vcr_choices=choices,
+                generation_mode=generation_mode,
+                description=description,
+            )
+            gen_ans = gen_ans.lower().strip()
+            gen_expl = gen_expl.lower().strip()
         
         # Get GT answer: prefer from info (correctly mapped), then from results
         # This ensures we use the GT answer that matches the question/choices
