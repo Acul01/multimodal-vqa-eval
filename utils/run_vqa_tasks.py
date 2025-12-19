@@ -241,19 +241,49 @@ def generate_answer_with_message_list(
     # --------------------------------------------------
     if _is_qwen_model(model):
         # Convert conversation to messages format, preserving structure
+        # Qwen3-VL requires ALL messages (system, user, assistant) to have list content
         messages = []
         for item in conversation:
             if item["role"] == "system":
-                messages.append({"role": "system", "content": item.get("content", "")})
+                # System message - convert to list format
+                content = item.get("content", "")
+                if isinstance(content, str):
+                    messages.append({"role": "system", "content": [{"type": "text", "text": content}]})
+                elif isinstance(content, list):
+                    # Ensure proper structure
+                    normalized_content = []
+                    for c in content:
+                        if isinstance(c, dict):
+                            if "type" not in c:
+                                normalized_content.append({"type": "text", "text": str(c.get("text", c))})
+                            else:
+                                normalized_content.append(c)
+                        elif isinstance(c, str):
+                            normalized_content.append({"type": "text", "text": c})
+                        else:
+                            normalized_content.append({"type": "text", "text": str(c)})
+                    messages.append({"role": "system", "content": normalized_content})
+                else:
+                    messages.append({"role": "system", "content": [{"type": "text", "text": str(content)}]})
             elif item["role"] == "user":
                 # Extract text and image from user content
                 text_parts = []
                 has_image = False
-                for content_item in item.get("content", []):
-                    if content_item.get("type") == "text":
-                        text_parts.append(content_item.get("text", ""))
-                    elif content_item.get("type") == "image":
-                        has_image = True
+                user_content = item.get("content", [])
+                # Handle both list and string formats
+                if isinstance(user_content, str):
+                    user_content = [{"type": "text", "text": user_content}]
+                elif not isinstance(user_content, list):
+                    user_content = [{"type": "text", "text": str(user_content)}]
+                
+                for content_item in user_content:
+                    if isinstance(content_item, dict):
+                        if content_item.get("type") == "text":
+                            text_parts.append(content_item.get("text", ""))
+                        elif content_item.get("type") == "image":
+                            has_image = True
+                    elif isinstance(content_item, str):
+                        text_parts.append(content_item)
                 
                 if has_image:
                     # User message with image
@@ -268,13 +298,31 @@ def generate_answer_with_message_list(
                     # User message without image (text only) - must be list format for Qwen3-VL
                     messages.append({"role": "user", "content": [{"type": "text", "text": " ".join(text_parts)}]})
             elif item["role"] == "assistant":
-                # Extract text from assistant content
-                text_parts = []
-                for content_item in item.get("content", []):
-                    if content_item.get("type") == "text":
-                        text_parts.append(content_item.get("text", ""))
-                if text_parts:
-                    messages.append({"role": "assistant", "content": " ".join(text_parts)})
+                # Assistant message - convert to list format
+                content = item.get("content", "")
+                if isinstance(content, str):
+                    messages.append({"role": "assistant", "content": [{"type": "text", "text": content}]})
+                elif isinstance(content, list):
+                    # Extract text from assistant content list
+                    text_parts = []
+                    for content_item in content:
+                        if isinstance(content_item, dict):
+                            if content_item.get("type") == "text":
+                                text_parts.append(content_item.get("text", ""))
+                        elif isinstance(content_item, str):
+                            text_parts.append(content_item)
+                    if text_parts:
+                        messages.append({"role": "assistant", "content": [{"type": "text", "text": " ".join(text_parts)}]})
+                    else:
+                        messages.append({"role": "assistant", "content": [{"type": "text", "text": ""}]})
+                else:
+                    messages.append({"role": "assistant", "content": [{"type": "text", "text": str(content)}]})
+        
+        # Final safety check: ensure ALL messages have list content
+        for msg in messages:
+            content = msg.get("content", [])
+            if not isinstance(content, list):
+                msg["content"] = [{"type": "text", "text": str(content)}]
         
         inputs = processor.apply_chat_template(
             messages,
