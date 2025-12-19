@@ -524,12 +524,27 @@ def generate_answer(
                     user_content = normalized_content
                 messages.append({"role": "user", "content": user_content})
             elif item["role"] == "assistant":
-                # Assistant message - Qwen3-VL expects string content for assistant messages
+                # Assistant message - Qwen3-VL might expect list format too, let's try keeping it as list
                 content = item.get("content", "")
-                if isinstance(content, list):
-                    text_parts = [c.get("text", "") for c in content if c.get("type") == "text"]
-                    content = " ".join(text_parts) if text_parts else ""
-                messages.append({"role": "assistant", "content": content})
+                if isinstance(content, str):
+                    # Convert string to list format for consistency
+                    messages.append({"role": "assistant", "content": [{"type": "text", "text": content}]})
+                elif isinstance(content, list):
+                    # Keep as list but ensure proper structure
+                    normalized_content = []
+                    for c in content:
+                        if isinstance(c, dict):
+                            if "type" not in c:
+                                normalized_content.append({"type": "text", "text": str(c.get("text", c))})
+                            else:
+                                normalized_content.append(c)
+                        elif isinstance(c, str):
+                            normalized_content.append({"type": "text", "text": c})
+                        else:
+                            normalized_content.append({"type": "text", "text": str(c)})
+                    messages.append({"role": "assistant", "content": normalized_content})
+                else:
+                    messages.append({"role": "assistant", "content": [{"type": "text", "text": str(content)}]})
         
         # Inject image into messages
         messages = _inject_image_into_messages(messages, img)
@@ -560,15 +575,22 @@ def generate_answer(
                             normalized_content.append({"type": "text", "text": str(item)})
                     msg["content"] = normalized_content
         
-        # Final verification before apply_chat_template
+        # Final verification and normalization: Qwen3-VL's apply_chat_template expects ALL messages to have list content
         for i, msg in enumerate(messages):
             role = msg.get("role")
             content = msg.get("content", [])
             print(f"[DEBUG generate_answer] Message {i}: role={role}, content_type={type(content)}")
+            
+            # Normalize ALL message types to list format for Qwen3-VL
+            if not isinstance(content, list):
+                if isinstance(content, str):
+                    msg["content"] = [{"type": "text", "text": content}]
+                else:
+                    msg["content"] = [{"type": "text", "text": str(content)}]
+                content = msg["content"]
+            
+            # Verify structure for user messages
             if role == "user":
-                if not isinstance(content, list):
-                    print(f"[DEBUG generate_answer] ERROR: Message {i} has non-list content: {type(content)} - {repr(content)[:200]}")
-                    raise ValueError(f"CRITICAL: Message {i} still has non-list content after normalization: {type(content)} - {repr(content)[:200]}")
                 print(f"[DEBUG generate_answer] Message {i} content length: {len(content)}")
                 for j, item in enumerate(content):
                     print(f"[DEBUG generate_answer] Message {i}, content item {j}: type={type(item)}, value={repr(item)[:100]}")
