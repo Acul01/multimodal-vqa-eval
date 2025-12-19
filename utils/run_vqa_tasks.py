@@ -562,16 +562,24 @@ def generate_answer(
         
         # Final verification before apply_chat_template
         for i, msg in enumerate(messages):
-            if msg.get("role") == "user":
-                content = msg.get("content", [])
+            role = msg.get("role")
+            content = msg.get("content", [])
+            print(f"[DEBUG generate_answer] Message {i}: role={role}, content_type={type(content)}")
+            if role == "user":
                 if not isinstance(content, list):
+                    print(f"[DEBUG generate_answer] ERROR: Message {i} has non-list content: {type(content)} - {repr(content)[:200]}")
                     raise ValueError(f"CRITICAL: Message {i} still has non-list content after normalization: {type(content)} - {repr(content)[:200]}")
+                print(f"[DEBUG generate_answer] Message {i} content length: {len(content)}")
                 for j, item in enumerate(content):
+                    print(f"[DEBUG generate_answer] Message {i}, content item {j}: type={type(item)}, value={repr(item)[:100]}")
                     if not isinstance(item, dict):
+                        print(f"[DEBUG generate_answer] ERROR: Message {i}, content item {j} is not a dict: {type(item)} - {repr(item)[:200]}")
                         raise ValueError(f"CRITICAL: Message {i}, content item {j} is not a dict: {type(item)} - {repr(item)[:200]}")
                     if "type" not in item:
+                        print(f"[DEBUG generate_answer] ERROR: Message {i}, content item {j} missing 'type' key: {item}")
                         raise ValueError(f"CRITICAL: Message {i}, content item {j} missing 'type' key: {item}")
         
+        print(f"[DEBUG generate_answer] About to call apply_chat_template with {len(messages)} messages")
         inputs = processor.apply_chat_template(
             messages,
             tokenize=True,
