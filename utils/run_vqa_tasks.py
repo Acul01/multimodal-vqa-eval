@@ -91,7 +91,7 @@ def _inject_image_into_messages(messages, pil_image: Image.Image):
     """
     msgs = copy.deepcopy(messages)
     
-    # Normalize user messages to ensure content is always a list
+    # Normalize user messages to ensure content is always a list with proper structure
     for turn in msgs:
         if turn.get("role") == "user":
             content = turn.get("content", [])
@@ -99,12 +99,32 @@ def _inject_image_into_messages(messages, pil_image: Image.Image):
                 turn["content"] = [{"type": "text", "text": content}]
             elif not isinstance(content, list):
                 turn["content"] = [{"type": "text", "text": str(content)}]
+            else:
+                # Ensure all items in content list are dicts with "type" key
+                normalized_content = []
+                for item in content:
+                    if isinstance(item, dict):
+                        if "type" not in item:
+                            normalized_content.append({"type": "text", "text": str(item.get("text", item))})
+                        else:
+                            normalized_content.append(item)
+                    elif isinstance(item, str):
+                        normalized_content.append({"type": "text", "text": item})
+                    else:
+                        normalized_content.append({"type": "text", "text": str(item)})
+                turn["content"] = normalized_content
     
     # Find and inject image into the last user message
     for turn in reversed(msgs):
-        if turn.get("role") == "user" and isinstance(turn.get("content"), list):
+        if turn.get("role") == "user":
+            content = turn.get("content", [])
+            # Double-check content is a list (should be after normalization above)
+            if not isinstance(content, list):
+                turn["content"] = [{"type": "text", "text": str(content)}]
+                content = turn["content"]
+            
             # Check if there's already an image placeholder
-            for item in turn["content"]:
+            for item in content:
                 if isinstance(item, dict) and item.get("type") == "image":
                     item["image"] = pil_image
                     return msgs
@@ -471,7 +491,7 @@ def generate_answer(
         messages = []
         for item in conversation:
             if item["role"] == "system":
-                # System message
+                # System message - Qwen3-VL expects string content for system messages
                 content = item.get("content", "")
                 if isinstance(content, list):
                     # Extract text from content list
@@ -479,7 +499,7 @@ def generate_answer(
                     content = " ".join(text_parts) if text_parts else ""
                 messages.append({"role": "system", "content": content})
             elif item["role"] == "user":
-                # User message - ensure content is a list format for Qwen3-VL
+                # User message - MUST be list format for Qwen3-VL
                 user_content = item.get("content", [])
                 if isinstance(user_content, str):
                     # Convert string to list format
@@ -487,9 +507,24 @@ def generate_answer(
                 elif not isinstance(user_content, list):
                     # Fallback: wrap in list
                     user_content = [{"type": "text", "text": str(user_content)}]
+                else:
+                    # Ensure all items in content list are dicts with "type" key
+                    normalized_content = []
+                    for content_item in user_content:
+                        if isinstance(content_item, dict):
+                            if "type" not in content_item:
+                                # Missing type, assume text
+                                normalized_content.append({"type": "text", "text": str(content_item.get("text", content_item))})
+                            else:
+                                normalized_content.append(content_item)
+                        elif isinstance(content_item, str):
+                            normalized_content.append({"type": "text", "text": content_item})
+                        else:
+                            normalized_content.append({"type": "text", "text": str(content_item)})
+                    user_content = normalized_content
                 messages.append({"role": "user", "content": user_content})
             elif item["role"] == "assistant":
-                # Assistant message
+                # Assistant message - Qwen3-VL expects string content for assistant messages
                 content = item.get("content", "")
                 if isinstance(content, list):
                     text_parts = [c.get("text", "") for c in content if c.get("type") == "text"]
@@ -499,36 +534,43 @@ def generate_answer(
         # Inject image into messages
         messages = _inject_image_into_messages(messages, img)
         
-        # Final safety check: ensure all user messages have list content
-        for msg in messages:
-            if msg.get("role") == "user":
-                content = msg.get("content", [])
-                if not isinstance(content, list):
-                    # Convert string to list format
-                    msg["content"] = [{"type": "text", "text": str(content)}]
-                else:
-                    # Ensure all items in content list are dicts with "type" key
-                    normalized_content = []
-                    for item in content:
-                        if isinstance(item, dict):
-                            normalized_content.append(item)
-                        elif isinstance(item, str):
-                            normalized_content.append({"type": "text", "text": item})
-                        else:
-                            normalized_content.append({"type": "text", "text": str(item)})
-                    msg["content"] = normalized_content
-        
-        # Debug: verify all messages have correct format
+        # Final safety check: ensure all user messages have list content with proper structure
         for i, msg in enumerate(messages):
             if msg.get("role") == "user":
                 content = msg.get("content", [])
                 if not isinstance(content, list):
-                    raise ValueError(f"Message {i} has non-list content: {type(content)} - {content}")
+                    # Convert string to list format
+                    print(f"[DEBUG] Message {i} has non-list content: {type(content)} - {repr(content)[:100]}")
+                    msg["content"] = [{"type": "text", "text": str(content)}]
+                else:
+                    # Ensure all items in content list are dicts with "type" key
+                    normalized_content = []
+                    for j, item in enumerate(content):
+                        if isinstance(item, dict):
+                            if "type" not in item:
+                                print(f"[DEBUG] Message {i}, content item {j} missing 'type' key: {item}")
+                                normalized_content.append({"type": "text", "text": str(item.get("text", item))})
+                            else:
+                                normalized_content.append(item)
+                        elif isinstance(item, str):
+                            print(f"[DEBUG] Message {i}, content item {j} is string, converting: {repr(item)[:50]}")
+                            normalized_content.append({"type": "text", "text": item})
+                        else:
+                            print(f"[DEBUG] Message {i}, content item {j} is unexpected type: {type(item)}")
+                            normalized_content.append({"type": "text", "text": str(item)})
+                    msg["content"] = normalized_content
+        
+        # Final verification before apply_chat_template
+        for i, msg in enumerate(messages):
+            if msg.get("role") == "user":
+                content = msg.get("content", [])
+                if not isinstance(content, list):
+                    raise ValueError(f"CRITICAL: Message {i} still has non-list content after normalization: {type(content)} - {repr(content)[:200]}")
                 for j, item in enumerate(content):
                     if not isinstance(item, dict):
-                        raise ValueError(f"Message {i}, content item {j} is not a dict: {type(item)} - {item}")
+                        raise ValueError(f"CRITICAL: Message {i}, content item {j} is not a dict: {type(item)} - {repr(item)[:200]}")
                     if "type" not in item:
-                        raise ValueError(f"Message {i}, content item {j} missing 'type' key: {item}")
+                        raise ValueError(f"CRITICAL: Message {i}, content item {j} missing 'type' key: {item}")
         
         inputs = processor.apply_chat_template(
             messages,
