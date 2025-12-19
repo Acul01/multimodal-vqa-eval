@@ -29,7 +29,8 @@ def resolve_csv_path(csv_path: str) -> str:
     Tries:
     1. Direct path (absolute or relative to current working directory)
     2. Relative to current working directory
-    3. Relative to common workspace roots (if running on cluster)
+    3. Remove leading "project_scripts/multimodal_vqa_eval/" if present (when running from repo root)
+    4. Relative to common workspace roots (if running on cluster)
     
     Args:
         csv_path: Input path (may be relative or absolute)
@@ -40,7 +41,7 @@ def resolve_csv_path(csv_path: str) -> str:
     Raises:
         FileNotFoundError: If file cannot be found
     """
-    # Try direct path first
+    # Try direct path first (if absolute)
     if os.path.isabs(csv_path) and os.path.exists(csv_path):
         return csv_path
     
@@ -49,6 +50,23 @@ def resolve_csv_path(csv_path: str) -> str:
     if os.path.exists(cwd_path):
         return cwd_path
     
+    # If path starts with "project_scripts/multimodal_vqa_eval/", try removing that prefix
+    # (user might have copied full path but script is already in that directory)
+    normalized_path = csv_path
+    prefixes_to_remove = [
+        "project_scripts/multimodal_vqa_eval/",
+        "project_scripts/multimodal_vqa_eval",
+    ]
+    
+    for prefix in prefixes_to_remove:
+        if normalized_path.startswith(prefix):
+            normalized_path = normalized_path[len(prefix):].lstrip("/")
+            # Try relative to current directory
+            test_path = os.path.abspath(os.path.join(os.getcwd(), normalized_path))
+            if os.path.exists(test_path):
+                return test_path
+            break
+    
     # Try relative to common cluster paths
     possible_roots = [
         "/netscratch/lrippe/",
@@ -56,22 +74,20 @@ def resolve_csv_path(csv_path: str) -> str:
         os.path.expanduser("~"),
     ]
     
+    # Try original path first
     for root in possible_roots:
         if os.path.exists(root):
             test_path = os.path.abspath(os.path.join(root, csv_path))
             if os.path.exists(test_path):
                 return test_path
     
-    # If still not found, try removing leading path components if it looks like a full path
-    # e.g., "project_scripts/multimodal_vqa_eval/..." -> try from /netscratch/lrippe/
-    path_parts = csv_path.split(os.sep)
-    if len(path_parts) > 1:
-        # Try from /netscratch/lrippe/ with the full path
-        cluster_root = "/netscratch/lrippe/"
-        if os.path.exists(cluster_root):
-            test_path = os.path.join(cluster_root, csv_path)
-            if os.path.exists(test_path):
-                return os.path.abspath(test_path)
+    # Try normalized path (with prefix removed)
+    if normalized_path != csv_path:
+        for root in possible_roots:
+            if os.path.exists(root):
+                test_path = os.path.abspath(os.path.join(root, normalized_path))
+                if os.path.exists(test_path):
+                    return test_path
     
     # Last resort: return the path as-is (will raise error if not found)
     return os.path.abspath(csv_path)
