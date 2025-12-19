@@ -226,8 +226,19 @@ def calculate_rouge_scores(
     
     print(f"\nProcessed {valid_pairs} valid pairs (skipped {skipped} rows with empty explanations)")
     
-    # Save extended CSV
-    output_path = resolved_path.rsplit('.', 1)[0] + '_with_rouge.csv'
+    # Save extended CSV in rouge_scores subdirectory
+    input_dir = os.path.dirname(resolved_path)
+    input_filename = os.path.basename(resolved_path)
+    input_name_without_ext = os.path.splitext(input_filename)[0]
+    
+    # Create or use rouge_scores subdirectory
+    rouge_scores_dir = os.path.join(input_dir, "rouge_scores")
+    os.makedirs(rouge_scores_dir, exist_ok=True)
+    
+    # Output filename: [original_filename]_rouge_scores.csv
+    output_filename = f"{input_name_without_ext}_rouge_scores.csv"
+    output_path = os.path.join(rouge_scores_dir, output_filename)
+    
     df.to_csv(output_path, index=False)
     print(f"\nSaved extended CSV with ROUGE scores to: {output_path}")
     
