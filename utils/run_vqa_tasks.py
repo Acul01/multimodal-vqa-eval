@@ -499,6 +499,14 @@ def generate_answer(
         # Inject image into messages
         messages = _inject_image_into_messages(messages, img)
         
+        # Final safety check: ensure all user messages have list content
+        for msg in messages:
+            if msg.get("role") == "user":
+                content = msg.get("content", [])
+                if not isinstance(content, list):
+                    # Convert string to list format
+                    msg["content"] = [{"type": "text", "text": str(content)}]
+        
         inputs = processor.apply_chat_template(
             messages,
             tokenize=True,
