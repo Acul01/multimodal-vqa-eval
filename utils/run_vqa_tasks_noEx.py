@@ -106,16 +106,21 @@ def generate_answer(
     conversation,
     max_new_tokens: int = 20,
     device: str = "cuda",
+    no_images: bool = False,
 ) -> str:
     """
     Unified generator for LLaVA and Qwen3-VL.
     `conversation` is a list of chat turns as produced by your prompt builders.
     """
-    img = Image.open(image_path).convert("RGB")
+    img = None if no_images else Image.open(image_path).convert("RGB")
 
     if _is_qwen_model(model):
-        # Qwen: image must be embedded into messages
-        messages = _inject_image_into_messages(conversation, img)
+        # Qwen: image must be embedded into messages (if not no_images)
+        if no_images:
+            # For text-only: use conversation as-is (no image injection)
+            messages = conversation
+        else:
+            messages = _inject_image_into_messages(conversation, img)
         inputs = processor.apply_chat_template(
             messages,
             tokenize=True,
@@ -149,7 +154,11 @@ def generate_answer(
     else:
         # LLaVA: prompt + image separately
         prompt = processor.apply_chat_template(conversation, add_generation_prompt=True)
-        inputs = processor(images=img, text=prompt, return_tensors="pt").to(device, torch.float16)
+        if no_images:
+            # Text-only: no image
+            inputs = processor(text=prompt, return_tensors="pt").to(device, torch.float16)
+        else:
+            inputs = processor(images=img, text=prompt, return_tensors="pt").to(device, torch.float16)
         input_len = inputs["input_ids"].shape[1]
 
         with torch.inference_mode():
@@ -176,6 +185,7 @@ def run_vqa_task(
     nle_root: str,
     split: str = "val",
     n_samples: Optional[int] = None,
+    no_images: bool = False,
 ) -> List[Dict]:
     """
     Unified entry point for VQA-X, ACT-X, ESNLI-VE, VCR (answers only).
@@ -196,11 +206,17 @@ def run_vqa_task(
     }
 
     ann_root_task = os.path.join(nle_root, ANN_DIR_MAP[task])
-    dataset = loader_map[task](images_root, ann_root_task, split, require_image=True)
+    
+    # For VCR ablations: allow running without images
+    require_image = True
+    if task == "VCR" and no_images:
+        require_image = False
+    
+    dataset = loader_map[task](images_root, ann_root_task, split, require_image=require_image)
     if n_samples:
         dataset = dataset[:n_samples]
 
-    print(f"Running {task} on {len(dataset)} samples...")
+    print(f"Running {task} on {len(dataset)} samples (no_images={no_images})...")
 
     results: List[Dict] = []
 
@@ -210,8 +226,8 @@ def run_vqa_task(
             gt = majority_vqa_answer(s.raw.get("answers"))
 
             # unified answer-only prompt
-            prompt = prompt_vqax_answer_only(s.question)
-            raw_pred = generate_answer(model, processor, s.image_path, prompt)
+            prompt = prompt_vqax_answer_only(s.question, include_image=(not no_images))
+            raw_pred = generate_answer(model, processor, s.image_path, prompt, no_images=no_images)
             pred_ans = postprocess_answer_only(raw_pred, "VQA-X", max_tokens=2)
             hit = int(normalize_ans(pred_ans) == normalize_ans(gt)) if gt else None
 
@@ -231,8 +247,8 @@ def run_vqa_task(
             gt = s.label
 
             # unified answer-only prompt
-            prompt = prompt_actx_answer_only()
-            raw_pred = generate_answer(model, processor, s.image_path, prompt)
+            prompt = prompt_actx_answer_only(include_image=(not no_images))
+            raw_pred = generate_answer(model, processor, s.image_path, prompt, no_images=no_images)
             pred_ans = postprocess_answer_only(raw_pred, "ACT-X", max_tokens=3)
             hit = int(normalize_ans(pred_ans) == normalize_ans(gt)) if gt else None
 
@@ -252,8 +268,8 @@ def run_vqa_task(
             gt = s.label
 
             # unified answer-only prompt
-            prompt = prompt_esnlive_answer_only(s.hypothesis)
-            raw_pred = generate_answer(model, processor, s.image_path, prompt)
+            prompt = prompt_esnlive_answer_only(s.hypothesis, include_image=(not no_images))
+            raw_pred = generate_answer(model, processor, s.image_path, prompt, no_images=no_images)
             pred_ans = postprocess_answer_only(raw_pred, "ESNLI-VE")
             hit = int(normalize_ans(pred_ans) == normalize_ans(gt)) if gt else None
 
@@ -282,9 +298,9 @@ def run_vqa_task(
                 choice_texts = (choice_texts + ["Option missing"] * 4)[:4]
 
             # unified answer-only prompt (letter only)
-            prompt = prompt_vcr_answer_only(s.question or "", choice_texts)
+            prompt = prompt_vcr_answer_only(s.question or "", choice_texts, include_image=(not no_images))
 
-            raw_pred = generate_answer(model, processor, s.image_path, prompt)
+            raw_pred = generate_answer(model, processor, s.image_path, prompt, no_images=no_images)
             letter = postprocess_answer_only(raw_pred, "VCR", vcr_choices=choice_texts)
 
             if letter is None:
